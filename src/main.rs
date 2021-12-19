@@ -1,6 +1,5 @@
 use std::fs;
 use std::fs::File;
-use std::io;
 use std::io::prelude::*;
 use std::path::Path;
 use std::collections::{HashMap};
@@ -9,7 +8,18 @@ use comrak::{markdown_to_html, ComrakOptions};
 use handlebars::Handlebars;
 use regex::Regex;
 
-fn find_files(dir: &Path, allowed_ends: &Vec<String>) -> Vec<String> {
+fn err_out(message: String) {
+    print!("{}", message);
+    std::process::exit(1);
+}
+
+enum FileType {
+    Handlebars,
+    Markdown,
+    Asset,
+}
+
+fn find_files(dir: &Path, file_type: FileType) -> Vec<String> {
     let mut files: Vec<String> = Vec::new();
 
     if dir.is_dir() {
@@ -20,23 +30,23 @@ fn find_files(dir: &Path, allowed_ends: &Vec<String>) -> Vec<String> {
             let path_str = path.as_path().display().to_string();
 
             if path.is_dir() {
-                files.extend(find_files(&path, allowed_ends));
+                files.extend(find_files(&path, file_type));
             }
 
-            let mut allowed = false;
-
-            if allowed_ends.is_empty() {
-                allowed = true;
-            }
-
-            for end in allowed_ends {
-                if path_str.ends_with(end) {
-                    allowed = true;
+            match file_type {
+                FileType::Handlebars => {
+                    if path_str.ends_with(".hbs") {
+                        files.push(path_str);
+                    }
                 }
-            }
+                FileType::Markdown => {
+                    if path_str.ends_with(".md") {
+                        files.push(path_str);
+                    }
+                }
+                FileType::Asset => {
 
-            if allowed {
-                files.push(path_str);
+                }
             }
         }
     }
@@ -126,7 +136,7 @@ fn parse_content_files(root_dir: &str, files: &Vec<String>) -> Vec<ContentItem> 
     return content_items;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct TemplateData {
     content_item: Option<ContentItem>
 }
@@ -138,7 +148,7 @@ fn build_html(root_dir: &str, template_name: String, partials: Vec<TemplateParti
     let main_template_path = format!("{}{}{}{}", root_dir, "/_layouts/", template_name, ".hbs");
     let main_template = hbs.register_template_file("_main", &main_template_path);
     
-    if (main_template.is_err()) {
+    if main_template.is_err() {
         println!("Something went wrong within your template, {}", template_name);
     }
 
@@ -160,26 +170,37 @@ fn build_html(root_dir: &str, template_name: String, partials: Vec<TemplateParti
     return String::new();
 }
 
-fn reset_public_dir(root_dir: &str) -> Result<(), io::Error> {
+fn empty_public_dir(root_dir: &str) {
     let path = &format!("{}{}", &root_dir, "/public");
 
-    for entry in fs::read_dir(path)? {
-        fs::remove_file(entry?.path())?;
-    }
-    
-    return Ok(());
+    for entry in fs::read_dir(path).unwrap() {
+        let file = entry.unwrap();
+        let file_path_str = file.path().as_path().display().to_string();
+
+        if file.path().is_dir() {
+            let remove_dir = fs::remove_dir_all(file.path());
+
+            if remove_dir.is_err() {
+                err_out(format!("Could not remove dir {}", file_path_str));
+            }
+        } else {
+            let remove_file = fs::remove_file(file.path());
+
+            if remove_file.is_err() {
+                err_out(format!("Could not remove file {}", file_path_str));
+            }
+        }
+    };
 }
 
-fn write_to_path(path: &str, contents: String) -> Result<(), io::Error> {
+fn write_to_path(path: &str, contents: String) {
     let path = Path::new(&path);
     let prefix = path.parent().unwrap();
     fs::create_dir_all(prefix).unwrap();
 
-    let mut file = File::create(path)?;
-    file.write_all(contents.as_bytes())?;
-    file.sync_data()?;
-
-    return Ok(());
+    let mut file = File::create(path).unwrap();
+    file.write_all(contents.as_bytes()).unwrap();
+    file.sync_data().unwrap();
 }
 
 fn main() {
@@ -191,10 +212,10 @@ fn main() {
     let partials = find_partials(READ_DIR);
 
     // Empty public dir
-    reset_public_dir(READ_DIR);
+    empty_public_dir(READ_DIR);
 
     // Build global data
-    let mut data = TemplateData {
+    let data = TemplateData {
         content_item: None,
     };
     
@@ -204,13 +225,13 @@ fn main() {
 
         let item = content_item.clone();
         let layout = item.meta["layout"].as_str();
-
-        data = TemplateData {
+        let item_data = TemplateData {
             content_item: Some(content_item),
+            ..data
         };
 
-        let html = build_html(READ_DIR, layout.to_string(), partials.clone(), data);
+        let html = build_html(READ_DIR, layout.to_string(), partials.clone(), item_data);
         let write_path = format!("{}{}{}{}", READ_DIR, "/public", item.slug, "/index.html");
-        write_to_path(&write_path, html).unwrap();
+        write_to_path(&write_path, html);
     }
 }
