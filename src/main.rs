@@ -8,6 +8,8 @@ use comrak::{markdown_to_html, ComrakOptions};
 use handlebars::Handlebars;
 use regex::Regex;
 
+/// Prints an error `message` to shell and subsequently
+/// exits the program.
 fn err_out(message: String) {
     print!("{}", message);
     std::process::exit(1);
@@ -18,6 +20,7 @@ enum FileType {
     Markdown,
 }
 
+/// adsasdasd
 fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
     let mut files: Vec<String> = Vec::new();
 
@@ -131,7 +134,7 @@ fn parse_content_files(root_dir: &str, files: &Vec<String>) -> Vec<ContentItem> 
 
 #[derive(Clone, Serialize, Deserialize)]
 struct TemplateData {
-    site: HashMap<String, String>,
+    site: SiteInfo,
     current: Option<ContentItem>,
     content: HashMap<String, Vec<ContentItem>>,
 }
@@ -220,16 +223,39 @@ fn build_content_items(root_dir: &str, data: &TemplateData) {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct SiteInfo {
+    title: Option<String>,
+    url: Option<String>,
+}
+
+fn get_site_info(root_dir: &str) -> SiteInfo {
+    let file_contents = fs::read_to_string(format!("{}{}", root_dir, "/site.json"));
+    let contents = file_contents.unwrap_or_default();
+    let data = serde_json::from_str(&contents);
+
+    if data.is_err() {
+        err_out("Could not read site info from site.json.".to_string());
+
+        return SiteInfo {
+            title: None,
+            url: None,
+        }
+    }
+
+    return data.unwrap();
+}
+
 fn main() {
     const READ_DIR: &str = "../bien.ee";
-   //let site_data = serde::json
+   let site_info = get_site_info(READ_DIR);
 
     // Empty public dir
     empty_public_dir(READ_DIR);
 
     // Build global data
     let data = TemplateData {
-        site: HashMap::new(),
+        site: site_info,
         current: None,
         content: HashMap::new(),
     };
