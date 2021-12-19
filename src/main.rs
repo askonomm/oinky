@@ -16,16 +16,13 @@ fn err_out(message: String) {
 enum FileType {
     Handlebars,
     Markdown,
-    Asset,
 }
 
-fn find_files(dir: &Path, file_type: FileType) -> Vec<String> {
+fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
     let mut files: Vec<String> = Vec::new();
 
     if dir.is_dir() {
-        let entries = fs::read_dir(dir).unwrap();
-        
-        for entry in entries {
+        for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
             let path_str = path.as_path().display().to_string();
 
@@ -44,9 +41,6 @@ fn find_files(dir: &Path, file_type: FileType) -> Vec<String> {
                         files.push(path_str);
                     }
                 }
-                FileType::Asset => {
-
-                }
             }
         }
     }
@@ -61,11 +55,10 @@ struct TemplatePartial {
 }
 
 fn find_partials(root_dir: &str) -> Vec<TemplatePartial> {
-    let partial_file_ends = Vec::from([String::from(".hbs")]);
-    let partial_file_paths = find_files(Path::new(&format!("{}{}", root_dir, "/_partials")), &partial_file_ends);
+    let paths = find_files(Path::new(&format!("{}{}", root_dir, "/_partials")), &FileType::Handlebars);
     let mut partials: Vec<TemplatePartial> = Vec::new();
 
-    for path in partial_file_paths {
+    for path in paths {
         let partial_path_split: Vec<&str> = path.split("/").collect();
         let partial_name = partial_path_split.last().copied().unwrap().replace(".hbs", "");
 
@@ -138,7 +131,9 @@ fn parse_content_files(root_dir: &str, files: &Vec<String>) -> Vec<ContentItem> 
 
 #[derive(Clone, Serialize, Deserialize)]
 struct TemplateData {
-    content_item: Option<ContentItem>
+    site: HashMap<String, String>,
+    current: Option<ContentItem>,
+    content: HashMap<String, Vec<ContentItem>>,
 }
 
 fn build_html(root_dir: &str, template_name: String, partials: Vec<TemplatePartial>, data: TemplateData) -> String {
@@ -149,7 +144,7 @@ fn build_html(root_dir: &str, template_name: String, partials: Vec<TemplateParti
     let main_template = hbs.register_template_file("_main", &main_template_path);
     
     if main_template.is_err() {
-        println!("Something went wrong within your template, {}", template_name);
+        println!("Something went wrong within your template, {}: {:?}", template_name, main_template.err());
     }
 
     // Register partials
@@ -157,7 +152,7 @@ fn build_html(root_dir: &str, template_name: String, partials: Vec<TemplateParti
         let partial_template = hbs.register_template_file(&partial.name, partial.path);
 
         if partial_template.is_err() {
-            println!("Something went wrong within your partial, {}", partial.name);
+            println!("Something went wrong within your partial, {}: {:?}", partial.name, partial_template.err());
         }
     }
 
@@ -165,9 +160,10 @@ fn build_html(root_dir: &str, template_name: String, partials: Vec<TemplateParti
 
     if render.is_ok() {
         return render.unwrap();
+    } else {
+        err_out(format!("There seems to be an error: {:?}", render.err()));
+        return String::new();
     }
-
-    return String::new();
 }
 
 fn empty_public_dir(root_dir: &str) {
@@ -203,35 +199,41 @@ fn write_to_path(path: &str, contents: String) {
     file.sync_data().unwrap();
 }
 
+fn build_content_items(root_dir: &str, data: &TemplateData) {
+    let read_path = Path::new(root_dir);
+    let content_files = find_files(read_path, &FileType::Markdown);
+    let content_items = parse_content_files(root_dir, &content_files);
+    let partials = find_partials(root_dir);
+    
+    for content_item in content_items {
+        println!("Building {}", content_item.slug);
+
+        let item = content_item.clone();
+        let item_data = TemplateData {
+            current: Some(content_item),
+            ..data.clone()
+        };
+
+        let html = build_html(root_dir, item.meta["layout"].as_str().to_string(), partials.clone(), item_data);
+        let write_path = format!("{}{}{}{}", root_dir, "/public", item.slug, "/index.html");
+        write_to_path(&write_path, html);
+    }
+}
+
 fn main() {
     const READ_DIR: &str = "../bien.ee";
-    let read_path = Path::new(READ_DIR);
-    let markdown_file_ends = Vec::from([String::from(".md")]);
-    let content_files = find_files(read_path, &markdown_file_ends);
-    let content_items = parse_content_files(READ_DIR, &content_files);
-    let partials = find_partials(READ_DIR);
+   //let site_data = serde::json
 
     // Empty public dir
     empty_public_dir(READ_DIR);
 
     // Build global data
     let data = TemplateData {
-        content_item: None,
+        site: HashMap::new(),
+        current: None,
+        content: HashMap::new(),
     };
     
     // Build individual content items
-    for content_item in content_items {
-        println!("Building {}", content_item.slug);
-
-        let item = content_item.clone();
-        let layout = item.meta["layout"].as_str();
-        let item_data = TemplateData {
-            content_item: Some(content_item),
-            ..data
-        };
-
-        let html = build_html(READ_DIR, layout.to_string(), partials.clone(), item_data);
-        let write_path = format!("{}{}{}{}", READ_DIR, "/public", item.slug, "/index.html");
-        write_to_path(&write_path, html);
-    }
+    build_content_items(READ_DIR, &data);
 }
