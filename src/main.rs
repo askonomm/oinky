@@ -1,12 +1,12 @@
+use comrak::{markdown_to_html, ComrakOptions};
+use handlebars::Handlebars;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
-use std::collections::{HashMap};
-use serde::{Serialize, Deserialize};
-use comrak::{markdown_to_html, ComrakOptions};
-use handlebars::Handlebars;
-use regex::Regex;
 
 /// Prints an error `message` to shell and subsequently
 /// exits the program.
@@ -18,6 +18,7 @@ fn err_out(message: String) {
 enum FileType {
     Handlebars,
     Markdown,
+    Asset,
 }
 
 /// adsasdasd
@@ -44,6 +45,11 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
                         files.push(path_str);
                     }
                 }
+                FileType::Asset => {
+                    if path_str.ends_with(".css") || path_str.ends_with(".js") {
+                        files.push(path_str);
+                    }
+                }
             }
         }
     }
@@ -58,12 +64,19 @@ struct TemplatePartial {
 }
 
 fn find_partials(root_dir: &str) -> Vec<TemplatePartial> {
-    let paths = find_files(Path::new(&format!("{}{}", root_dir, "/_partials")), &FileType::Handlebars);
+    let paths = find_files(
+        Path::new(&format!("{}{}", root_dir, "/_partials")),
+        &FileType::Handlebars,
+    );
     let mut partials: Vec<TemplatePartial> = Vec::new();
 
     for path in paths {
         let partial_path_split: Vec<&str> = path.split("/").collect();
-        let partial_name = partial_path_split.last().copied().unwrap().replace(".hbs", "");
+        let partial_name = partial_path_split
+            .last()
+            .copied()
+            .unwrap()
+            .replace(".hbs", "");
 
         let partial = TemplatePartial {
             name: partial_name,
@@ -81,7 +94,8 @@ struct ContentItem {
     path: String,
     slug: String,
     meta: HashMap<String, String>,
-    entry: String
+    entry: String,
+    time_to_read: usize,
 }
 
 fn parse_content_file_meta(contents: &str) -> HashMap<String, String> {
@@ -95,11 +109,11 @@ fn parse_content_file_meta(contents: &str) -> HashMap<String, String> {
             let split_line: Vec<&str> = line.split(":").collect();
             let key = split_line[0].trim().to_string();
             let val = split_line[1].trim().to_string();
-            
+
             map.insert(key, val);
         }
     }
-    
+
     return map;
 }
 
@@ -118,12 +132,16 @@ fn parse_content_files(root_dir: &str, files: &Vec<String>) -> Vec<ContentItem> 
         let contents = file_contents.unwrap_or_default();
         let meta = parse_content_file_meta(&contents);
         let entry = parse_content_file_entry(&contents);
+        let path = file.to_string();
+        let slug = file.to_string().replace(root_dir, "").replace(".md", "");
+        let time_to_read = entry.split_whitespace().count() / 225;
 
         let content_item = ContentItem {
-            path: file.to_string(),
-            slug: file.to_string().replace(root_dir, "").replace(".md", ""),
-            meta: meta,
-            entry: entry
+            path,
+            slug,
+            meta,
+            entry,
+            time_to_read,
         };
 
         content_items.push(content_item);
@@ -139,15 +157,24 @@ struct TemplateData {
     content: HashMap<String, Vec<ContentItem>>,
 }
 
-fn build_html(root_dir: &str, template_name: String, partials: Vec<TemplatePartial>, data: TemplateData) -> String {
+fn build_html(
+    root_dir: &str,
+    template_name: String,
+    partials: Vec<TemplatePartial>,
+    data: TemplateData,
+) -> String {
     let mut hbs = Handlebars::new();
-    
+
     // Register the main template
     let main_template_path = format!("{}{}{}{}", root_dir, "/_layouts/", template_name, ".hbs");
     let main_template = hbs.register_template_file("_main", &main_template_path);
-    
+
     if main_template.is_err() {
-        println!("Something went wrong within your template, {}: {:?}", template_name, main_template.err());
+        println!(
+            "Something went wrong within your template, {}: {:?}",
+            template_name,
+            main_template.err()
+        );
     }
 
     // Register partials
@@ -155,7 +182,11 @@ fn build_html(root_dir: &str, template_name: String, partials: Vec<TemplateParti
         let partial_template = hbs.register_template_file(&partial.name, partial.path);
 
         if partial_template.is_err() {
-            println!("Something went wrong within your partial, {}: {:?}", partial.name, partial_template.err());
+            println!(
+                "Something went wrong within your partial, {}: {:?}",
+                partial.name,
+                partial_template.err()
+            );
         }
     }
 
@@ -189,7 +220,7 @@ fn empty_public_dir(root_dir: &str) {
                 err_out(format!("Could not remove file {}", file_path_str));
             }
         }
-    };
+    }
 }
 
 fn write_to_path(path: &str, contents: String) {
@@ -207,7 +238,7 @@ fn build_content_items(root_dir: &str, data: &TemplateData) {
     let content_files = find_files(read_path, &FileType::Markdown);
     let content_items = parse_content_files(root_dir, &content_files);
     let partials = find_partials(root_dir);
-    
+
     for content_item in content_items {
         println!("Building {}", content_item.slug);
 
@@ -217,10 +248,19 @@ fn build_content_items(root_dir: &str, data: &TemplateData) {
             ..data.clone()
         };
 
-        let html = build_html(root_dir, item.meta["layout"].as_str().to_string(), partials.clone(), item_data);
+        let html = build_html(
+            root_dir,
+            item.meta["layout"].as_str().to_string(),
+            partials.clone(),
+            item_data,
+        );
         let write_path = format!("{}{}{}{}", root_dir, "/public", item.slug, "/index.html");
         write_to_path(&write_path, html);
     }
+}
+
+fn build_content_from_dsl(root_dir: &str) -> HashMap<String, Vec<ContentItem>> {
+    return HashMap::new();
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -240,17 +280,22 @@ fn get_site_info(root_dir: &str) -> SiteInfo {
         return SiteInfo {
             title: None,
             url: None,
-        }
+        };
     }
 
     return data.unwrap();
 }
 
+fn move_assets(root_dir: &str) {
+    let assets = find_files(Path::new(root_dir), &FileType::Asset);
+}
+
 fn main() {
     const READ_DIR: &str = "../bien.ee";
-   let site_info = get_site_info(READ_DIR);
+    let site_info = get_site_info(READ_DIR);
+    let content = build_content_from_dsl(READ_DIR);
 
-    // Empty public dir
+    // Empty the public dir
     empty_public_dir(READ_DIR);
 
     // Build global data
@@ -259,7 +304,10 @@ fn main() {
         current: None,
         content: HashMap::new(),
     };
-    
+
     // Build individual content items
     build_content_items(READ_DIR, &data);
+
+    // Move assets to /public dir
+    move_assets(READ_DIR);
 }
