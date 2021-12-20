@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 
-/// Prints an error `message` to shell and subsequently
+/// Prints an error `message` to stdout and subsequently
 /// exits the program.
 fn err_out(message: String) {
     print!("{}", message);
@@ -46,7 +46,12 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
                     }
                 }
                 FileType::Asset => {
-                    if path_str.ends_with(".css") || path_str.ends_with(".js") {
+                    if path_str.ends_with(".css")
+                        || path_str.ends_with(".js")
+                        || path_str.ends_with(".jpg")
+                        || path_str.ends_with(".png")
+                        || path_str.ends_with(".svg")
+                    {
                         files.push(path_str);
                     }
                 }
@@ -259,7 +264,24 @@ fn build_content_items(root_dir: &str, data: &TemplateData) {
     }
 }
 
-fn build_content_from_dsl(root_dir: &str) -> HashMap<String, Vec<ContentItem>> {
+#[derive(Clone, Serialize, Deserialize)]
+struct ContentDSLItem {
+    from: String,
+    sort_by: Option<String>,
+    order: Option<String>,
+    limit: Option<usize>,
+    group_by: Option<String>,
+}
+
+fn compose_content_from_dsl(root_dir: &str) -> HashMap<String, Vec<ContentItem>> {
+    let file_contents = fs::read_to_string(format!("{}{}", root_dir, "/content.json"));
+    let contents = file_contents.unwrap_or_default();
+    let dsl: Result<Vec<ContentDSLItem>, serde_json::Error>  = serde_json::from_str(&contents);
+    
+    if dsl.is_err() {
+        return HashMap::new();
+    }
+
     return HashMap::new();
 }
 
@@ -288,21 +310,30 @@ fn get_site_info(root_dir: &str) -> SiteInfo {
 
 fn move_assets(root_dir: &str) {
     let assets = find_files(Path::new(root_dir), &FileType::Asset);
+
+    for asset in assets {
+        let relative_path = asset.replace(root_dir, "");
+        println!("Copying {}", relative_path);
+        let action = fs::copy(asset, format!("{}{}{}", root_dir, "/public", relative_path));
+
+        if action.is_err() {
+            err_out(format!("Could not copy file {}", relative_path));
+        }
+    }
 }
 
 fn main() {
     const READ_DIR: &str = "../bien.ee";
-    let site_info = get_site_info(READ_DIR);
-    let content = build_content_from_dsl(READ_DIR);
 
     // Empty the public dir
     empty_public_dir(READ_DIR);
 
     // Build global data
+    let content = compose_content_from_dsl(READ_DIR);
     let data = TemplateData {
-        site: site_info,
+        site: get_site_info(READ_DIR),
         current: None,
-        content: HashMap::new(),
+        content,
     };
 
     // Build individual content items
