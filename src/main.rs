@@ -15,6 +15,7 @@ fn err_out(message: String) {
     std::process::exit(1);
 }
 
+/// asd
 enum FileType {
     Handlebars,
     Markdown,
@@ -36,12 +37,12 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
 
             match file_type {
                 FileType::Handlebars => {
-                    if path_str.ends_with(".hbs") {
+                    if path_str.ends_with(".hbs") || path_str.ends_with(".handlebars") {
                         files.push(path_str);
                     }
                 }
                 FileType::Markdown => {
-                    if path_str.ends_with(".md") {
+                    if path_str.ends_with(".md") || path_str.ends_with(".markdown") {
                         files.push(path_str);
                     }
                 }
@@ -276,8 +277,8 @@ struct ContentDSLItem {
 fn compose_content_from_dsl(root_dir: &str) -> HashMap<String, Vec<ContentItem>> {
     let file_contents = fs::read_to_string(format!("{}{}", root_dir, "/content.json"));
     let contents = file_contents.unwrap_or_default();
-    let dsl: Result<Vec<ContentDSLItem>, serde_json::Error>  = serde_json::from_str(&contents);
-    
+    let dsl: Result<Vec<ContentDSLItem>, serde_json::Error> = serde_json::from_str(&contents);
+
     if dsl.is_err() {
         return HashMap::new();
     }
