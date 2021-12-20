@@ -326,9 +326,6 @@ fn move_assets(root_dir: &str) {
 fn main() {
     const READ_DIR: &str = "../bien.ee";
 
-    // Empty the public dir
-    empty_public_dir(READ_DIR);
-
     // Build global data
     let content = compose_content_from_dsl(READ_DIR);
     let data = TemplateData {
@@ -336,6 +333,9 @@ fn main() {
         current: None,
         content,
     };
+
+    // Empty the public dir
+    empty_public_dir(READ_DIR);
 
     // Build individual content items
     build_content_items(READ_DIR, &data);
