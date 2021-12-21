@@ -177,7 +177,7 @@ fn parse_content_files(root_dir: &str, files: &Vec<String>) -> Vec<ContentItem> 
 
     for file in files {
         let file_contents = fs::read_to_string(file);
-        let contents = file_contents.unwrap_or_default();
+        let contents = file_contents.unwrap_or(String::new());
         let meta = parse_content_file_meta(&contents);
         let entry = parse_content_file_entry(&contents);
         let path = file.to_string();
