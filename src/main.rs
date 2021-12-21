@@ -71,38 +71,36 @@ fn err_out(message: String) {
 fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
     let mut files: Vec<String> = Vec::new();
 
-    if dir.is_dir() {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            let path_str = path.as_path().display().to_string();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let path_str = path.as_path().display().to_string();
 
-            if path.is_dir() {
-                files.extend(find_files(&path, file_type));
+        if path.is_dir() {
+            files.extend(find_files(&path, file_type));
+        }
+
+        match file_type {
+            FileType::Handlebars => {
+                if path_str.ends_with(".hbs") || path_str.ends_with(".handlebars") {
+                    files.push(path_str);
+                }
             }
-
-            match file_type {
-                FileType::Handlebars => {
-                    if path_str.ends_with(".hbs") || path_str.ends_with(".handlebars") {
-                        files.push(path_str);
-                    }
+            FileType::Markdown => {
+                if path_str.ends_with(".md") || path_str.ends_with(".markdown") {
+                    files.push(path_str);
                 }
-                FileType::Markdown => {
-                    if path_str.ends_with(".md") || path_str.ends_with(".markdown") {
-                        files.push(path_str);
-                    }
-                }
-                FileType::Asset => {
-                    if path_str.ends_with(".css")
-                        || path_str.ends_with(".js")
-                        || path_str.ends_with(".jpg")
-                        || path_str.ends_with(".png")
-                        || path_str.ends_with(".svg")
-                        || path_str.ends_with(".ttf")
-                        || path_str.ends_with(".woff")
-                        || path_str.ends_with(".woff2")
-                    {
-                        files.push(path_str);
-                    }
+            }
+            FileType::Asset => {
+                if path_str.ends_with(".css")
+                    || path_str.ends_with(".js")
+                    || path_str.ends_with(".jpg")
+                    || path_str.ends_with(".png")
+                    || path_str.ends_with(".svg")
+                    || path_str.ends_with(".ttf")
+                    || path_str.ends_with(".woff")
+                    || path_str.ends_with(".woff2")
+                {
+                    files.push(path_str);
                 }
             }
         }
