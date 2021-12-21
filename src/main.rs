@@ -198,7 +198,7 @@ fn parse_content_files(root_dir: &str, files: &Vec<String>) -> Vec<ContentItem> 
     return content_items;
 }
 
-/// Builds HTML from a Handlebars template in a path `template_path`, by fusing 
+/// Builds HTML from a Handlebars template in a path `template_path`, by fusing
 /// together `data` and registering any given `partials`. Returns a HTML string.
 fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: TemplateData) -> String {
     let mut hbs = Handlebars::new();
@@ -262,7 +262,7 @@ fn empty_public_dir(root_dir: &str) {
     }
 }
 
-/// Writes given `contents` into given `path. Parent directories do not have 
+/// Writes given `contents` into given `path. Parent directories do not have
 /// exist as it will also create them itself if they don't exist.
 fn write_to_path(path: &str, contents: String) {
     let path = Path::new(&path);
@@ -274,8 +274,8 @@ fn write_to_path(path: &str, contents: String) {
     file.sync_data().unwrap();
 }
 
-/// Compiles all content items within the `root_dir` directory with given 
-/// global Handlebars `data`, resulting in HTML files written to disk. 
+/// Compiles all content items within the `root_dir` directory with given
+/// global Handlebars `data`, resulting in HTML files written to disk.
 fn compile_content_items(root_dir: &str, data: &TemplateData) {
     let read_path = Path::new(root_dir);
     let content_files = find_files(read_path, &FileType::Markdown);
@@ -305,9 +305,9 @@ fn compile_content_items(root_dir: &str, data: &TemplateData) {
     }
 }
 
-/// Composes content data from the `content.json` DSL which allows users to 
-/// create data-sets from the available content files, further enabling more 
-/// dynamic-ish site creation. 
+/// Composes content data from the `content.json` DSL which allows users to
+/// create data-sets from the available content files, further enabling more
+/// dynamic-ish site creation.
 fn compose_content_from_dsl(root_dir: &str) -> HashMap<String, Vec<ContentItem>> {
     let file_contents = fs::read_to_string(format!("{}{}", root_dir, "/content.json"));
     let contents = file_contents.unwrap_or_default();
@@ -364,13 +364,17 @@ fn copy_assets(root_dir: &str) {
 }
 
 fn main() {
+    //let current_dir = std::env::current_dir().unwrap_or(Path::new("./").to_path_buf());
     const READ_DIR: &str = "../bien.ee";
 
     // Empty the public dir
     empty_public_dir(READ_DIR);
 
-    // Build individual content items
+    // Compile individual content items
     compile_content_items(READ_DIR, &compose_global_template_data(READ_DIR));
+
+    // Compile individual non-layout and non-partial Handlebars templates.
+    // TODO
 
     // Move assets to /public dir
     copy_assets(READ_DIR);
