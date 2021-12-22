@@ -1,5 +1,6 @@
+use cached::proc_macro::cached;
 use comrak::{markdown_to_html, ComrakOptions};
-use handlebars::Handlebars;
+use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -10,6 +11,7 @@ use std::path::Path;
 
 enum FileType {
     Handlebars,
+    HandlebarsPages,
     Markdown,
     Asset,
 }
@@ -20,14 +22,17 @@ struct TemplatePartial {
     path: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct TemplateData {
-    site: SiteInfo,
-    current: Option<ContentItem>,
     content: HashMap<String, Vec<ContentItem>>,
+    path: Option<String>,
+    slug: Option<String>,
+    meta: Option<HashMap<String, String>>,
+    entry: Option<String>,
+    time_to_read: Option<usize>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct ContentItem {
     path: String,
     slug: String,
@@ -46,23 +51,24 @@ struct ContentDSLItem {
     group_by: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct SiteInfoMetaItem {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SiteInfoItem {
     name: String,
     value: String,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct SiteInfo {
-    title: Option<String>,
-    url: Option<String>,
-    meta: Option<Vec<SiteInfoMetaItem>>,
 }
 
 /// Prints an error `message` to stdout and subsequently exits the program.
 fn err_out(message: String) {
     print!("{}", message);
     std::process::exit(1);
+}
+
+#[cached]
+fn get_dir() -> &'static str {
+    //let current_dir = std::env::current_dir().unwrap_or(Path::new("./").to_path_buf());
+    const READ_DIR: &str = "../bien.ee";
+
+    return READ_DIR;
 }
 
 /// Recursively browsers directories within the given `dir` for any and all
@@ -82,6 +88,13 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
         match file_type {
             FileType::Handlebars => {
                 if path_str.ends_with(".hbs") || path_str.ends_with(".handlebars") {
+                    files.push(path_str);
+                }
+            }
+            FileType::HandlebarsPages => {
+                if (!path_str.contains("_layouts") && !path_str.contains("_partials"))
+                    && (path_str.ends_with(".hbs") || path_str.ends_with(".handlebars"))
+                {
                     files.push(path_str);
                 }
             }
@@ -109,12 +122,13 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
     return files;
 }
 
-/// Finds all partials from within the `root_dir`/_partials directory that
+/// Finds all partials from within the /_partials directory that
 /// it turns into a vector of consumable `TemplatePartial`'s. Consumed by
 /// Handlebars in `built_html`.
-fn find_partials(root_dir: &str) -> Vec<TemplatePartial> {
+#[cached]
+fn find_partials() -> Vec<TemplatePartial> {
     let paths = find_files(
-        Path::new(&format!("{}{}", root_dir, "/_partials")),
+        Path::new(&format!("{}{}", get_dir(), "/_partials")),
         &FileType::Handlebars,
     );
     let mut partials: Vec<TemplatePartial> = Vec::new();
@@ -169,10 +183,8 @@ fn parse_content_file_entry(contents: &str) -> String {
 }
 
 /// Parses given Markdown `files` for contents that contain YAML-like meta-data
-/// and the Markdown entry. It requires a `root_dir` to be passed so that it could
-/// create relative URL's for each conten item (slugs). Returns a vector of
-/// `ContentItem`.
-fn parse_content_files(root_dir: &str, files: &Vec<String>) -> Vec<ContentItem> {
+/// and the Markdown entry. Returns a vector of `ContentItem`.
+fn parse_content_files(files: &Vec<String>) -> Vec<ContentItem> {
     let mut content_items: Vec<ContentItem> = Vec::new();
 
     for file in files {
@@ -181,9 +193,8 @@ fn parse_content_files(root_dir: &str, files: &Vec<String>) -> Vec<ContentItem> 
         let meta = parse_content_file_meta(&contents);
         let entry = parse_content_file_entry(&contents);
         let path = file.to_string();
-        let slug = file.to_string().replace(root_dir, "").replace(".md", "");
+        let slug = file.to_string().replace(get_dir(), "").replace(".md", "");
         let time_to_read = entry.split_whitespace().count() / 225;
-
         let content_item = ContentItem {
             path,
             slug,
@@ -196,6 +207,26 @@ fn parse_content_files(root_dir: &str, files: &Vec<String>) -> Vec<ContentItem> 
     }
 
     return content_items;
+}
+
+fn site_info_helper(
+    h: &Helper,
+    _: &Handlebars,
+    _: &Context,
+    rc: &mut RenderContext,
+    out: &mut dyn Output,
+) -> HelperResult {
+    let first_param = h.param(0).unwrap();
+    let site_info = get_site_info();
+    let key: Result<String, serde_json::Error> =
+        serde_json::from_value(first_param.value().clone());
+    let val = site_info.get(&key.unwrap());
+
+    if val.is_some() {
+        out.write(val.unwrap())?;
+    }
+
+    Ok(())
 }
 
 /// Builds HTML from a Handlebars template in a path `template_path`, by fusing
@@ -227,6 +258,9 @@ fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: Templ
         }
     }
 
+    // Register helpers
+    hbs.register_helper("site", Box::new(site_info_helper));
+
     let render = hbs.render("_main", &data);
 
     if render.is_ok() {
@@ -237,10 +271,9 @@ fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: Templ
     }
 }
 
-/// Deletes all files and directories from within the /public directory inside of
-/// the given `root_dir` directory.
-fn empty_public_dir(root_dir: &str) {
-    let path = &format!("{}{}", &root_dir, "/public");
+/// Deletes all files and directories from within the /public directory.
+fn empty_public_dir() {
+    let path = &format!("{}{}", get_dir(), "/public");
 
     for entry in fs::read_dir(path).unwrap() {
         let file = entry.unwrap();
@@ -274,33 +307,54 @@ fn write_to_path(path: &str, contents: String) {
     file.sync_data().unwrap();
 }
 
-/// Compiles all content items within the `root_dir` directory with given
+/// Compiles all content items within the root directory with given
 /// global Handlebars `data`, resulting in HTML files written to disk.
-fn compile_content_items(root_dir: &str, data: &TemplateData) {
-    let read_path = Path::new(root_dir);
+fn compile_content_items(data: &TemplateData) {
+    let read_path = Path::new(get_dir());
     let content_files = find_files(read_path, &FileType::Markdown);
-    let content_items = parse_content_files(root_dir, &content_files);
-    let partials = find_partials(root_dir);
+    let content_items = parse_content_files(&content_files);
+    let partials = find_partials();
 
     for content_item in content_items {
         println!("Building {}", content_item.slug);
 
         let item = content_item.clone();
         let item_data = TemplateData {
-            current: Some(content_item),
+            path: Some(content_item.path),
+            slug: Some(content_item.slug),
+            meta: Some(content_item.meta),
+            entry: Some(content_item.entry),
+            time_to_read: Some(content_item.time_to_read),
             ..data.clone()
         };
 
         let template_path = format!(
             "{}{}{}{}",
-            root_dir,
+            get_dir(),
             "/_layouts/",
             item.meta["layout"].as_str().to_string(),
             ".hbs"
         );
 
         let html = build_html(template_path, partials.clone(), item_data);
-        let write_path = format!("{}{}{}{}", root_dir, "/public", item.slug, "/index.html");
+        let write_path = format!("{}{}{}{}", get_dir(), "/public", item.slug, "/index.html");
+
+        write_to_path(&write_path, html);
+    }
+}
+
+fn compile_template_items(data: &TemplateData) {
+    let read_path = Path::new(get_dir());
+    let partials = find_partials();
+    let template_files = find_files(read_path, &FileType::HandlebarsPages);
+
+    for file in template_files {
+        let slug = file.to_string().replace(get_dir(), "").replace(".hbs", "");
+        println!("Building {}", slug);
+
+        let html = build_html(file, partials.clone(), data.clone());
+        let write_path = format!("{}{}{}", get_dir(), "/public", slug);
+
         write_to_path(&write_path, html);
     }
 }
@@ -308,8 +362,8 @@ fn compile_content_items(root_dir: &str, data: &TemplateData) {
 /// Composes content data from the `content.json` DSL which allows users to
 /// create data-sets from the available content files, further enabling more
 /// dynamic-ish site creation.
-fn compose_content_from_dsl(root_dir: &str) -> HashMap<String, Vec<ContentItem>> {
-    let file_contents = fs::read_to_string(format!("{}{}", root_dir, "/content.json"));
+fn compose_content_from_dsl() -> HashMap<String, Vec<ContentItem>> {
+    let file_contents = fs::read_to_string(format!("{}{}", get_dir(), "/content.json"));
     let contents = file_contents.unwrap_or_default();
     let dsl: Result<Vec<ContentDSLItem>, serde_json::Error> = serde_json::from_str(&contents);
 
@@ -317,45 +371,67 @@ fn compose_content_from_dsl(root_dir: &str) -> HashMap<String, Vec<ContentItem>>
         return HashMap::new();
     }
 
-    return HashMap::new();
+    let mut content: HashMap<String, Vec<ContentItem>> = HashMap::new();
+
+    for dsl_item in dsl.unwrap_or(Vec::new()) {
+        let content_files = find_files(
+            Path::new(&format!("{}{}{}", get_dir(), "/", dsl_item.from)),
+            &FileType::Markdown,
+        );
+        let content_items = parse_content_files(&content_files);
+
+        content.insert(dsl_item.name, content_items);
+    }
+
+    return content;
 }
 
 /// Composes global template data for consumption by Handlebars templates.
-fn compose_global_template_data(root_dir: &str) -> TemplateData {
+fn compose_global_template_data() -> TemplateData {
     return TemplateData {
-        site: get_site_info(&root_dir),
-        current: None,
-        content: compose_content_from_dsl(&root_dir),
+        content: compose_content_from_dsl(),
+        path: None,
+        slug: None,
+        meta: None,
+        entry: None,
+        time_to_read: None,
     };
 }
 
 /// Return `SiteInfo` from the `site.json` file.
-fn get_site_info(root_dir: &str) -> SiteInfo {
-    let file_contents = fs::read_to_string(format!("{}{}", root_dir, "/site.json"));
-    let contents = file_contents.unwrap_or_default();
-    let data = serde_json::from_str(&contents);
+#[cached]
+fn get_site_info() -> HashMap<String, String> {
+    println!("Reading site info ...");
+    let file_contents = fs::read_to_string(format!("{}{}", get_dir(), "/site.json"));
+    let contents = file_contents.unwrap_or(String::new());
+    let data: Result<Vec<SiteInfoItem>, serde_json::Error> = serde_json::from_str(&contents);
 
     if data.is_err() {
         err_out("Could not read site info from site.json.".to_string());
 
-        return SiteInfo {
-            title: None,
-            url: None,
-            meta: None,
-        };
+        return HashMap::new();
     }
 
-    return data.unwrap();
+    let mut site_info = HashMap::new();
+
+    for data_item in data.unwrap_or(Vec::new()) {
+        site_info.insert(data_item.name, data_item.value);
+    }
+
+    return site_info;
 }
 
 /// Copies all files with `FileType::Asset` into the /public directory.
-fn copy_assets(root_dir: &str) {
-    let assets = find_files(Path::new(root_dir), &FileType::Asset);
+fn copy_assets() {
+    let assets = find_files(Path::new(get_dir()), &FileType::Asset);
 
     for asset in assets {
-        let relative_path = asset.replace(root_dir, "");
+        let relative_path = asset.replace(get_dir(), "");
         println!("Copying {}", relative_path);
-        let action = fs::copy(asset, format!("{}{}{}", root_dir, "/public", relative_path));
+        let action = fs::copy(
+            asset,
+            format!("{}{}{}", get_dir(), "/public", relative_path),
+        );
 
         if action.is_err() {
             err_out(format!("Could not copy file {}", relative_path));
@@ -364,18 +440,17 @@ fn copy_assets(root_dir: &str) {
 }
 
 fn main() {
-    //let current_dir = std::env::current_dir().unwrap_or(Path::new("./").to_path_buf());
-    const READ_DIR: &str = "../bien.ee";
-
     // Empty the public dir
-    empty_public_dir(READ_DIR);
+    empty_public_dir();
+
+    let global_data = compose_global_template_data();
 
     // Compile individual content items
-    compile_content_items(READ_DIR, &compose_global_template_data(READ_DIR));
+    compile_content_items(&global_data);
 
     // Compile individual non-layout and non-partial Handlebars templates.
-    // TODO
+    compile_template_items(&global_data);
 
     // Move assets to /public dir
-    copy_assets(READ_DIR);
+    copy_assets();
 }
