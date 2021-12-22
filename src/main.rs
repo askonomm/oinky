@@ -2,7 +2,9 @@ use cached::proc_macro::cached;
 use comrak::{markdown_to_html, ComrakOptions};
 use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext};
 use regex::Regex;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_value::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::io::prelude::*;
@@ -70,7 +72,7 @@ fn get_dir() -> &'static str {
     return READ_DIR;
 }
 
-/// Recursively browsers directories within the given `dir` for any and all
+/// Recursively browses directories within the given `dir` for any and all
 /// files that match a `file_type`. Returns a vector of strings where each
 /// string is an absolute path to the file.
 fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
@@ -124,7 +126,7 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
 /// Finds all partials from within the /_partials directory that
 /// it turns into a vector of consumable `TemplatePartial`'s. Consumed by
 /// Handlebars in `built_html`.
-#[cached(time=2)]
+#[cached(time = 2)]
 fn find_partials() -> Vec<TemplatePartial> {
     let paths = find_files(
         Path::new(&format!("{}{}", get_dir(), "/_partials")),
@@ -342,6 +344,9 @@ fn compile_content_items(data: &TemplateData) {
     }
 }
 
+/// Compiles all non-layout and non-partial template items within the 
+/// root directory with given Handlebars `data`, resulting in HTML files 
+/// written to disk.
 fn compile_template_items(data: &TemplateData) {
     let read_path = Path::new(get_dir());
     let partials = find_partials();
@@ -356,6 +361,81 @@ fn compile_template_items(data: &TemplateData) {
 
         write_to_path(&write_path, html);
     }
+}
+
+fn get_field_by_name<T, R>(data: T, field: &str) -> R
+where
+    T: Serialize,
+    R: DeserializeOwned,
+{
+    let mut map = match serde_value::to_value(data) {
+        Ok(Value::Map(map)) => map,
+        _ => panic!("expected a struct"),
+    };
+
+    let key = Value::String(field.to_owned());
+    println!("{:?}", key);
+    let value = match map.remove(&key) {
+        Some(value) => value,
+        None => panic!("no such field"),
+    };
+
+    match R::deserialize(value) {
+        Ok(r) => r,
+        Err(_) => panic!("wrong type?"),
+    }
+}
+
+fn sort_content_items(content_items: &mut Vec<ContentItem>, by: String, order: String) {
+    content_items.sort_by(|a, b| {
+        if by.contains("meta.") {
+            let meta_key = by.replace("meta.", "");
+            let comp_a = a.meta.get(&meta_key);
+            let comp_b = b.meta.get(&meta_key);
+
+            return if order == "desc" {
+                comp_b.cmp(&comp_a)
+            } else {
+                comp_a.cmp(&comp_b)
+            };
+        } else {
+            let comp_a: String = get_field_by_name(a, &by);
+            let comp_b: String = get_field_by_name(b, &by);
+
+            return if order == "desc" {
+                comp_b.cmp(&comp_a)
+            } else {
+                comp_a.cmp(&comp_b)
+            };
+        }
+    });
+}
+
+fn blah(dsl: ContentDSLItem, content_items: &mut Vec<ContentItem>) -> Vec<ContentItem> {
+    // Sort and order?
+    if dsl.sort_by.is_some() {
+        let mut order = String::from("desc");
+
+        if dsl.order.is_some() {
+            order = dsl.order.unwrap();
+        }
+
+        sort_content_items(content_items, dsl.sort_by.unwrap(), order);
+    }
+
+    // Group by?
+    if dsl.group_by.is_some() {
+        let group_by = dsl.group_by.unwrap();
+
+        let group_by_split: Vec<&str> = group_by.split("|").collect();
+    }
+
+    // Limit?
+    if dsl.limit.is_some() {
+        content_items.truncate(dsl.limit.unwrap());
+    }
+
+    return content_items.to_vec();
 }
 
 /// Composes content data from the `content.json` DSL which allows users to
@@ -373,11 +453,9 @@ fn compose_content_from_dsl() -> HashMap<String, Vec<ContentItem>> {
     let mut content: HashMap<String, Vec<ContentItem>> = HashMap::new();
 
     for dsl_item in dsl.unwrap_or(Vec::new()) {
-        let content_files = find_files(
-            Path::new(&format!("{}{}{}", get_dir(), "/", dsl_item.from)),
-            &FileType::Markdown,
-        );
-        let content_items = parse_content_files(&content_files);
+        let path_str = format!("{}{}{}", get_dir(), "/", dsl_item.from);
+        let content_files = find_files(Path::new(&path_str), &FileType::Markdown);
+        let content_items = blah(dsl_item.clone(), &mut parse_content_files(&content_files));
 
         content.insert(dsl_item.name, content_items);
     }
@@ -398,7 +476,7 @@ fn compose_global_template_data() -> TemplateData {
 }
 
 /// Return `SiteInfo` from the `site.json` file.
-#[cached(time=2)]
+#[cached(time = 2)]
 fn get_site_info() -> HashMap<String, String> {
     println!("Reading site info ...");
     let file_contents = fs::read_to_string(format!("{}{}", get_dir(), "/site.json"));
