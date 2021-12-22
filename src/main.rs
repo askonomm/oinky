@@ -5,7 +5,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 
@@ -125,7 +124,7 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
 /// Finds all partials from within the /_partials directory that
 /// it turns into a vector of consumable `TemplatePartial`'s. Consumed by
 /// Handlebars in `built_html`.
-#[cached]
+#[cached(time=2)]
 fn find_partials() -> Vec<TemplatePartial> {
     let paths = find_files(
         Path::new(&format!("{}{}", get_dir(), "/_partials")),
@@ -213,7 +212,7 @@ fn site_info_helper(
     h: &Helper,
     _: &Handlebars,
     _: &Context,
-    rc: &mut RenderContext,
+    _rc: &mut RenderContext,
     out: &mut dyn Output,
 ) -> HelperResult {
     let first_param = h.param(0).unwrap();
@@ -302,7 +301,7 @@ fn write_to_path(path: &str, contents: String) {
     let prefix = path.parent().unwrap();
     fs::create_dir_all(prefix).unwrap();
 
-    let mut file = File::create(path).unwrap();
+    let mut file = fs::File::create(path).unwrap();
     file.write_all(contents.as_bytes()).unwrap();
     file.sync_data().unwrap();
 }
@@ -399,7 +398,7 @@ fn compose_global_template_data() -> TemplateData {
 }
 
 /// Return `SiteInfo` from the `site.json` file.
-#[cached]
+#[cached(time=2)]
 fn get_site_info() -> HashMap<String, String> {
     println!("Reading site info ...");
     let file_contents = fs::read_to_string(format!("{}{}", get_dir(), "/site.json"));
@@ -443,6 +442,7 @@ fn main() {
     // Empty the public dir
     empty_public_dir();
 
+    // Construct global Handlebars data
     let global_data = compose_global_template_data();
 
     // Compile individual content items
