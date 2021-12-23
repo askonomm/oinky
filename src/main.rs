@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::prelude::*;
 use std::path::Path;
+use chrono::prelude::*;
 
 enum FileType {
     Handlebars,
@@ -24,8 +25,14 @@ struct TemplatePartial {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct TemplateContentDSLItem {
+    get: Vec<ContentItem>,
+    get_grouped: HashMap<String, Vec<ContentItem>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct TemplateData {
-    content: HashMap<String, Vec<ContentItem>>,
+    content: HashMap<String, TemplateContentDSLItem>,
     path: Option<String>,
     slug: Option<String>,
     meta: Option<HashMap<String, String>>,
@@ -33,7 +40,7 @@ struct TemplateData {
     time_to_read: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ContentItem {
     path: String,
     slug: String,
@@ -47,6 +54,7 @@ struct ContentDSLItem {
     name: String,
     from: String,
     sort_by: Option<String>,
+    group_by: Option<String>,
     order: Option<String>,
     limit: Option<usize>,
 }
@@ -237,6 +245,27 @@ fn site_info_helper(
     Ok(())
 }
 
+fn format_date_helper(
+    h: &Helper,
+    _: &Handlebars,
+    _: &Context,
+    _rc: &mut RenderContext,
+    out: &mut dyn Output,
+) -> HelperResult {
+    let date: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
+    let date_parts: Vec<&str> = date.split("-").collect();
+    let year = date_parts[0].parse::<i32>().unwrap();
+    let month = date_parts[1].parse::<u32>().unwrap();
+    let day = date_parts[2].parse::<u32>().unwrap();
+    let format: String = serde_json::from_value(h.param(1).unwrap().value().clone()).unwrap();
+    let dt = Utc.ymd(year, month, day).and_hms(12, 0, 9);
+    let result = dt.format(&format).to_string();
+
+    out.write(&result)?;
+    
+    Ok(())
+}
+
 /// Builds HTML from a Handlebars template in a path `template_path`, by fusing
 /// together `data` and registering any given `partials`. Returns a HTML string.
 fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: TemplateData) -> String {
@@ -268,6 +297,7 @@ fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: Templ
 
     // Register helpers
     hbs.register_helper("site", Box::new(site_info_helper));
+    hbs.register_helper("format_date", Box::new(format_date_helper));
 
     let render = hbs.render("_main", &data);
 
@@ -419,7 +449,10 @@ fn sort_content_items(content_items: &mut Vec<ContentItem>, by: String, order: S
     });
 }
 
-fn blah(dsl: ContentDSLItem, content_items: &mut Vec<ContentItem>) -> Vec<ContentItem> {
+fn dsl_sort_order_limit(
+    dsl: ContentDSLItem,
+    content_items: &mut Vec<ContentItem>,
+) -> Vec<ContentItem> {
     // Sort and order?
     if dsl.sort_by.is_some() {
         sort_content_items(
@@ -437,10 +470,87 @@ fn blah(dsl: ContentDSLItem, content_items: &mut Vec<ContentItem>) -> Vec<Conten
     return content_items.to_vec();
 }
 
+fn dsl_group_by_grouper(content_item: &ContentItem, by: &String) -> String {
+    let grouper: String;
+
+    if by.contains("meta.") {
+        let meta_key: String;
+
+        if by.contains("|") {
+            let whole_key = by.replace("meta.", "");
+            let meta_key_split: Vec<&str> = whole_key.split("|").collect();
+            meta_key = meta_key_split[0].to_string();
+        } else {
+            meta_key = by.replace("meta.", "");
+        }
+
+        let meta_modifier: String;
+        
+        if by.contains("|") {
+            let whole_key = by.replace("meta.", "");
+            let meta_key_split: Vec<&str> = whole_key.split("|").collect();
+            meta_modifier = meta_key_split[1].to_string();
+        } else {
+            meta_modifier = String::new();
+        };
+
+        let value = content_item.meta.get(&meta_key).unwrap().to_string();
+
+        // Special date mungling
+        if meta_key == "date" && meta_modifier == "year" {
+            let date_parts: Vec<&str> = value.split("-").collect();
+            grouper = date_parts[0].to_string();
+        } else if meta_key == "date" && meta_modifier == "month" {
+            let date_parts: Vec<&str> = value.split("-").collect();
+            grouper = date_parts[1].to_string();
+        } else if meta_key == "date" && meta_modifier == "day" {
+            let date_parts: Vec<&str> = value.split("-").collect();
+            grouper = date_parts[2].to_string();
+        } else {
+            grouper = value;
+        }
+    } else {
+        grouper = get_field_by_name(content_item, &by);
+    }
+
+    return grouper;
+}
+
+fn dsl_group_by(
+    content_items: Vec<ContentItem>,
+    by: String,
+) -> HashMap<String, Vec<ContentItem>> {
+    if by.is_empty() {
+        return HashMap::new();
+    }
+
+    let mut grouped_content: HashMap<String, Vec<ContentItem>> = HashMap::new();
+
+    for content_item in content_items {
+        let item = content_item.clone();
+        let grouper = dsl_group_by_grouper(&item, &by);
+        let mut grouped_content_items: Vec<ContentItem> = grouped_content
+            .get(&grouper.to_string())
+            .unwrap_or(&Vec::new())
+            .to_vec();
+
+        grouped_content_items.push(item);
+
+        if grouped_content.is_empty() {
+            grouped_content.insert(grouper, grouped_content_items);
+        } else {
+            grouped_content.remove(&grouper);
+            grouped_content.insert(grouper, grouped_content_items);
+        }
+    }
+
+    return grouped_content;
+}
+
 /// Composes content data from the `content.json` DSL which allows users to
 /// create data-sets from the available content files, further enabling more
 /// dynamic-ish site creation.
-fn compose_content_from_dsl() -> HashMap<String, Vec<ContentItem>> {
+fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
     let file_contents = fs::read_to_string(format!("{}{}", get_dir(), "/content.json"));
     let contents = file_contents.unwrap_or_default();
     let dsl: Result<Vec<ContentDSLItem>, serde_json::Error> = serde_json::from_str(&contents);
@@ -449,14 +559,25 @@ fn compose_content_from_dsl() -> HashMap<String, Vec<ContentItem>> {
         return HashMap::new();
     }
 
-    let mut content: HashMap<String, Vec<ContentItem>> = HashMap::new();
+    let mut content: HashMap<String, TemplateContentDSLItem> = HashMap::new();
 
     for dsl_item in dsl.unwrap_or(Vec::new()) {
         let path_str = format!("{}{}{}", get_dir(), "/", dsl_item.from);
         let content_files = find_files(Path::new(&path_str), &FileType::Markdown);
-        let content_items = blah(dsl_item.clone(), &mut parse_content_files(&content_files));
+        let mut parsed_content_files = parse_content_files(&content_files);
+        let content_items = dsl_sort_order_limit(dsl_item.clone(), &mut parsed_content_files);
+        let grouped_content_items = dsl_group_by(
+            content_items.clone(),
+            dsl_item.group_by.unwrap_or(String::from("")),
+        );
 
-        content.insert(dsl_item.name, content_items);
+        content.insert(
+            dsl_item.name,
+            TemplateContentDSLItem {
+                get: content_items,
+                get_grouped: grouped_content_items,
+            },
+        );
     }
 
     return content;
