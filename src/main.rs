@@ -49,7 +49,6 @@ struct ContentDSLItem {
     sort_by: Option<String>,
     order: Option<String>,
     limit: Option<usize>,
-    group_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +63,7 @@ fn err_out(message: String) {
     std::process::exit(1);
 }
 
+/// Returns the current working directory to run Oink in.
 #[cached]
 fn get_dir() -> &'static str {
     //let current_dir = std::env::current_dir().unwrap_or(Path::new("./").to_path_buf());
@@ -210,6 +210,13 @@ fn parse_content_files(files: &Vec<String>) -> Vec<ContentItem> {
     return content_items;
 }
 
+/// The site info Handlebars helper which retrieves info from `site.json`
+/// and returns it.
+///
+/// Example use:
+/// ```handlebars
+/// {{site "title"}}
+/// ```
 fn site_info_helper(
     h: &Helper,
     _: &Handlebars,
@@ -344,8 +351,8 @@ fn compile_content_items(data: &TemplateData) {
     }
 }
 
-/// Compiles all non-layout and non-partial template items within the 
-/// root directory with given Handlebars `data`, resulting in HTML files 
+/// Compiles all non-layout and non-partial template items within the
+/// root directory with given Handlebars `data`, resulting in HTML files
 /// written to disk.
 fn compile_template_items(data: &TemplateData) {
     let read_path = Path::new(get_dir());
@@ -363,26 +370,27 @@ fn compile_template_items(data: &TemplateData) {
     }
 }
 
-fn get_field_by_name<T, R>(data: T, field: &str) -> R
+/// Returns a value of a given `s` by a given `field`. Enables the
+/// retrieval of Struct values by key using a string.
+fn get_field_by_name<T, R>(s: T, field: &str) -> R
 where
     T: Serialize,
     R: DeserializeOwned,
 {
-    let mut map = match serde_value::to_value(data) {
+    let mut map = match serde_value::to_value(s) {
         Ok(Value::Map(map)) => map,
-        _ => panic!("expected a struct"),
+        _ => panic!("Not a struct."),
     };
 
     let key = Value::String(field.to_owned());
-    println!("{:?}", key);
     let value = match map.remove(&key) {
         Some(value) => value,
-        None => panic!("no such field"),
+        None => panic!("{}", format!("no such field {:?}", key)),
     };
 
     match R::deserialize(value) {
         Ok(r) => r,
-        Err(_) => panic!("wrong type?"),
+        Err(_) => panic!("Something went wrong ..."),
     }
 }
 
@@ -414,20 +422,11 @@ fn sort_content_items(content_items: &mut Vec<ContentItem>, by: String, order: S
 fn blah(dsl: ContentDSLItem, content_items: &mut Vec<ContentItem>) -> Vec<ContentItem> {
     // Sort and order?
     if dsl.sort_by.is_some() {
-        let mut order = String::from("desc");
-
-        if dsl.order.is_some() {
-            order = dsl.order.unwrap();
-        }
-
-        sort_content_items(content_items, dsl.sort_by.unwrap(), order);
-    }
-
-    // Group by?
-    if dsl.group_by.is_some() {
-        let group_by = dsl.group_by.unwrap();
-
-        let group_by_split: Vec<&str> = group_by.split("|").collect();
+        sort_content_items(
+            content_items,
+            dsl.sort_by.unwrap_or(String::from("slug")),
+            dsl.order.unwrap_or(String::from("desc")),
+        );
     }
 
     // Limit?
