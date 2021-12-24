@@ -1,4 +1,5 @@
 use cached::proc_macro::cached;
+use chrono::prelude::*;
 use comrak::{markdown_to_html, ComrakOptions};
 use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext};
 use regex::Regex;
@@ -9,7 +10,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::prelude::*;
 use std::path::Path;
-use chrono::prelude::*;
 
 enum FileType {
     Handlebars,
@@ -25,6 +25,13 @@ struct TemplatePartial {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+enum TemplateContentDSLItemType {
+    Normal(Vec<ContentItem>),
+    Grouped(HashMap<String, Vec<ContentItem>>),
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct TemplateContentDSLItem {
     get: Vec<ContentItem>,
     get_grouped: HashMap<String, Vec<ContentItem>>,
@@ -33,7 +40,7 @@ struct TemplateContentDSLItem {
 #[derive(Debug, Clone, Serialize)]
 struct TemplateData {
     site: serde_json::Value,
-    content: HashMap<String, TemplateContentDSLItem>,
+    content: HashMap<String, TemplateContentDSLItemType>,
     path: Option<String>,
     slug: Option<String>,
     meta: Option<HashMap<String, String>>,
@@ -50,7 +57,7 @@ struct ContentItem {
     time_to_read: usize,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ContentDSLItem {
     name: String,
     from: String,
@@ -236,7 +243,7 @@ fn format_date_helper(
     let result = dt.format(&format).to_string();
 
     out.write(&result)?;
-    
+
     Ok(())
 }
 
@@ -458,7 +465,7 @@ fn dsl_group_by_grouper(content_item: &ContentItem, by: &String) -> String {
         }
 
         let meta_modifier: String;
-        
+
         if by.contains("|") {
             let whole_key = by.replace("meta.", "");
             let meta_key_split: Vec<&str> = whole_key.split("|").collect();
@@ -489,10 +496,7 @@ fn dsl_group_by_grouper(content_item: &ContentItem, by: &String) -> String {
     return grouper;
 }
 
-fn dsl_group_by(
-    content_items: Vec<ContentItem>,
-    by: String,
-) -> HashMap<String, Vec<ContentItem>> {
+fn dsl_group_by(content_items: Vec<ContentItem>, by: String) -> HashMap<String, Vec<ContentItem>> {
     if by.is_empty() {
         return HashMap::new();
     }
@@ -523,7 +527,7 @@ fn dsl_group_by(
 /// Composes content data from the `content.json` DSL which allows users to
 /// create data-sets from the available content files, further enabling more
 /// dynamic-ish site creation.
-fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
+fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItemType> {
     let file_contents = fs::read_to_string(format!("{}{}", get_dir(), "/content.json"));
     let contents = file_contents.unwrap_or_default();
     let dsl: Result<Vec<ContentDSLItem>, serde_json::Error> = serde_json::from_str(&contents);
@@ -532,25 +536,31 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
         return HashMap::new();
     }
 
-    let mut content: HashMap<String, TemplateContentDSLItem> = HashMap::new();
+    let mut content: HashMap<String, TemplateContentDSLItemType> = HashMap::new();
 
     for dsl_item in dsl.unwrap_or(Vec::new()) {
+        let item = dsl_item.clone();
         let path_str = format!("{}{}{}", get_dir(), "/", dsl_item.from);
         let content_files = find_files(Path::new(&path_str), &FileType::Markdown);
         let mut parsed_content_files = parse_content_files(&content_files);
-        let content_items = dsl_sort_order_limit(dsl_item.clone(), &mut parsed_content_files);
-        let grouped_content_items = dsl_group_by(
-            content_items.clone(),
-            dsl_item.group_by.unwrap_or(String::from("")),
-        );
 
-        content.insert(
-            dsl_item.name,
-            TemplateContentDSLItem {
-                get: content_items,
-                get_grouped: grouped_content_items,
-            },
-        );
+        if dsl_item.group_by.is_some() {
+            content.insert(
+                dsl_item.name,
+                TemplateContentDSLItemType::Grouped(dsl_group_by(
+                    dsl_sort_order_limit(item, &mut parsed_content_files),
+                    dsl_item.group_by.unwrap_or(String::from("")),
+                )),
+            );
+        } else {
+            content.insert(
+                dsl_item.name,
+                TemplateContentDSLItemType::Normal(dsl_sort_order_limit(
+                    item,
+                    &mut parsed_content_files,
+                )),
+            );
+        }
     }
 
     return content;
@@ -602,6 +612,8 @@ fn main() {
 
     // Construct global Handlebars data
     let global_data = compose_global_template_data();
+
+    println!("{:#?}", global_data);
 
     // Compile individual content items
     compile_content_items(&global_data);
