@@ -235,6 +235,12 @@ fn parse_content_files(files: &Vec<String>) -> Vec<ContentItem> {
     return content_items;
 }
 
+/// Handlebars date formatter helper.
+/// Usage:
+/// 
+/// ```handlebars
+/// {{format_date date-string "%Y %d %m"}}
+/// ```
 fn format_date_helper(
     h: &Helper,
     _: &Handlebars,
