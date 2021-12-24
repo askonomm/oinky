@@ -32,6 +32,7 @@ struct TemplateContentDSLItem {
 
 #[derive(Debug, Clone, Serialize)]
 struct TemplateData {
+    site: serde_json::Value,
     content: HashMap<String, TemplateContentDSLItem>,
     path: Option<String>,
     slug: Option<String>,
@@ -239,7 +240,7 @@ fn site_info_helper(
     let val = site_info.get(&key.unwrap());
 
     if val.is_some() {
-        out.write(val.unwrap())?;
+        //out.write(val.unwrap())?;
     }
 
     Ok(())
@@ -586,6 +587,7 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
 /// Composes global template data for consumption by Handlebars templates.
 fn compose_global_template_data() -> TemplateData {
     return TemplateData {
+        site: get_site_info(),
         content: compose_content_from_dsl(),
         path: None,
         slug: None,
@@ -597,25 +599,11 @@ fn compose_global_template_data() -> TemplateData {
 
 /// Return `SiteInfo` from the `site.json` file.
 #[cached(time = 2)]
-fn get_site_info() -> HashMap<String, String> {
-    println!("Reading site info ...");
+fn get_site_info() -> serde_json::Value {
     let file_contents = fs::read_to_string(format!("{}{}", get_dir(), "/site.json"));
     let contents = file_contents.unwrap_or(String::new());
-    let data: Result<Vec<SiteInfoItem>, serde_json::Error> = serde_json::from_str(&contents);
 
-    if data.is_err() {
-        err_out("Could not read site info from site.json.".to_string());
-
-        return HashMap::new();
-    }
-
-    let mut site_info = HashMap::new();
-
-    for data_item in data.unwrap_or(Vec::new()) {
-        site_info.insert(data_item.name, data_item.value);
-    }
-
-    return site_info;
+    return serde_json::from_str(&contents).unwrap();
 }
 
 /// Copies all files with `FileType::Asset` into the /public directory.
