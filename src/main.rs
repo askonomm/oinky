@@ -613,8 +613,6 @@ fn main() {
     // Construct global Handlebars data
     let global_data = compose_global_template_data();
 
-    println!("{:#?}", global_data);
-
     // Compile individual content items
     compile_content_items(&global_data);
 
