@@ -219,33 +219,6 @@ fn parse_content_files(files: &Vec<String>) -> Vec<ContentItem> {
     return content_items;
 }
 
-/// The site info Handlebars helper which retrieves info from `site.json`
-/// and returns it.
-///
-/// Example use:
-/// ```handlebars
-/// {{site "title"}}
-/// ```
-fn site_info_helper(
-    h: &Helper,
-    _: &Handlebars,
-    _: &Context,
-    _rc: &mut RenderContext,
-    out: &mut dyn Output,
-) -> HelperResult {
-    let first_param = h.param(0).unwrap();
-    let site_info = get_site_info();
-    let key: Result<String, serde_json::Error> =
-        serde_json::from_value(first_param.value().clone());
-    let val = site_info.get(&key.unwrap());
-
-    if val.is_some() {
-        //out.write(val.unwrap())?;
-    }
-
-    Ok(())
-}
-
 fn format_date_helper(
     h: &Helper,
     _: &Handlebars,
@@ -297,7 +270,6 @@ fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: Templ
     }
 
     // Register helpers
-    hbs.register_helper("site", Box::new(site_info_helper));
     hbs.register_helper("format_date", Box::new(format_date_helper));
 
     let render = hbs.render("_main", &data);
