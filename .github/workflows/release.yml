@@ -23,6 +23,15 @@ jobs:
             This release is created automatically.
           draft: false
           prerelease: false
+      
+      - name: 'Write Upload URL To File'
+        run: |
+          echo "${{steps.create_release.outputs.upload_url}}" > upload_url.txt
+      - name: 'Publish Upload URL'
+        uses: actions/upload-artifact@v2-preview
+        with:
+          name: 'upload_url.txt'
+          path: 'upload_url.txt'
 
   build-bin-linux:
     needs: [ set-up ]
@@ -45,3 +54,47 @@ jobs:
         with:
           name: 'oink-linux'
           path: target/release/oink
+
+      - name: 'Upload'
+        id: upload-release-asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+        with:
+          upload_url: ${{ env.UPLOAD_URL }}
+          asset_path: target/release/oink
+          asset_name: oink-linux
+          asset_content_type: application/octet-stream
+
+  build-bin-macos:
+    needs: [ set-up ]
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --all-features
+
+      - name: 'Publish'
+        uses: actions/upload-artifact@v2-preview
+        with:
+          name: 'oink-macos'
+          path: target/release/oink
+
+      - name: 'Upload'
+        id: upload-release-asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+        with:
+          upload_url: ${{ env.UPLOAD_URL }}
+          asset_path: target/release/oink
+          asset_name: oink-macos
+          asset_content_type: application/octet-stream
