@@ -26,21 +26,15 @@ struct TemplatePartial {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
-enum TemplateContentDSLItemType {
+enum TemplateContentDSLItem {
     Normal(Vec<ContentItem>),
     Grouped(HashMap<String, Vec<ContentItem>>),
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct TemplateContentDSLItem {
-    get: Vec<ContentItem>,
-    get_grouped: HashMap<String, Vec<ContentItem>>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 struct TemplateData {
     site: serde_json::Value,
-    content: HashMap<String, TemplateContentDSLItemType>,
+    content: HashMap<String, TemplateContentDSLItem>,
     path: Option<String>,
     slug: Option<String>,
     meta: Option<HashMap<String, String>>,
@@ -527,7 +521,7 @@ fn dsl_group_by(content_items: Vec<ContentItem>, by: String) -> HashMap<String, 
 /// Composes content data from the `content.json` DSL which allows users to
 /// create data-sets from the available content files, further enabling more
 /// dynamic-ish site creation.
-fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItemType> {
+fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
     let file_contents = fs::read_to_string(format!("{}{}", get_dir(), "/content.json"));
     let contents = file_contents.unwrap_or_default();
     let dsl: Result<Vec<ContentDSLItem>, serde_json::Error> = serde_json::from_str(&contents);
@@ -536,7 +530,7 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItemType> {
         return HashMap::new();
     }
 
-    let mut content: HashMap<String, TemplateContentDSLItemType> = HashMap::new();
+    let mut content: HashMap<String, TemplateContentDSLItem> = HashMap::new();
 
     for dsl_item in dsl.unwrap_or(Vec::new()) {
         let item = dsl_item.clone();
@@ -547,7 +541,7 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItemType> {
         if dsl_item.group_by.is_some() {
             content.insert(
                 dsl_item.name,
-                TemplateContentDSLItemType::Grouped(dsl_group_by(
+                TemplateContentDSLItem::Grouped(dsl_group_by(
                     dsl_sort_order_limit(item, &mut parsed_content_files),
                     dsl_item.group_by.unwrap_or(String::from("")),
                 )),
@@ -555,7 +549,7 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItemType> {
         } else {
             content.insert(
                 dsl_item.name,
-                TemplateContentDSLItemType::Normal(dsl_sort_order_limit(
+                TemplateContentDSLItem::Normal(dsl_sort_order_limit(
                     item,
                     &mut parsed_content_files,
                 )),
