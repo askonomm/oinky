@@ -1,12 +1,16 @@
 use cached::proc_macro::cached;
 use chrono::prelude::*;
 use comrak::{markdown_to_html, ComrakOptions};
+use dotenv::dotenv;
 use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext};
+use indexmap::IndexMap;
 use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json;
 use serde_value::Value;
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::io::prelude::*;
 use std::path::Path;
@@ -28,7 +32,7 @@ struct TemplatePartial {
 #[serde(untagged)]
 enum TemplateContentDSLItem {
     Normal(Vec<ContentItem>),
-    Grouped(HashMap<String, Vec<ContentItem>>),
+    Grouped(IndexMap<String, Vec<ContentItem>>),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,14 +61,14 @@ struct ContentDSLItem {
     from: String,
     sort_by: Option<String>,
     group_by: Option<String>,
+    group_by_order: Option<String>,
     order: Option<String>,
     limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SiteInfoItem {
-    name: String,
-    value: String,
+#[derive(Debug, Clone)]
+struct Config {
+    dir: String,
 }
 
 /// Prints an error `message` to stdout and subsequently exits the program.
@@ -73,13 +77,21 @@ fn err_out(message: String) {
     std::process::exit(1);
 }
 
-/// Returns the current working directory to run Oink in.
+/// Returns runtime config for Oink such as the directory
+/// where to run Oink in. If dotenv values for these exist then it will
+/// use those instead.
 #[cached]
-fn get_dir() -> &'static str {
-    //let current_dir = std::env::current_dir().unwrap_or(Path::new("./").to_path_buf());
-    const READ_DIR: &str = "../bien.ee";
+fn get_config() -> Config {
+    let dir;
+    let env_dir = env::var("READ_DIR");
 
-    return READ_DIR;
+    if env_dir.is_ok() {
+        dir = env_dir.unwrap().to_string();
+    } else {
+        dir = env::current_dir().unwrap().to_str().unwrap().to_string();
+    }
+
+    return Config { dir };
 }
 
 /// Recursively browses directories within the given `dir` for any and all
@@ -139,7 +151,7 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
 #[cached(time = 2)]
 fn find_partials() -> Vec<TemplatePartial> {
     let paths = find_files(
-        Path::new(&format!("{}{}", get_dir(), "/_partials")),
+        Path::new(&format!("{}{}", get_config().dir, "/_partials")),
         &FileType::Handlebars,
     );
     let mut partials: Vec<TemplatePartial> = Vec::new();
@@ -204,7 +216,10 @@ fn parse_content_files(files: &Vec<String>) -> Vec<ContentItem> {
         let meta = parse_content_file_meta(&contents);
         let entry = parse_content_file_entry(&contents);
         let path = file.to_string();
-        let slug = file.to_string().replace(get_dir(), "").replace(".md", "");
+        let slug = file
+            .to_string()
+            .replace(&get_config().dir, "")
+            .replace(".md", "");
         let time_to_read = entry.split_whitespace().count() / 225;
         let content_item = ContentItem {
             path,
@@ -227,16 +242,18 @@ fn format_date_helper(
     _rc: &mut RenderContext,
     out: &mut dyn Output,
 ) -> HelperResult {
-    let date: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
-    let date_parts: Vec<&str> = date.split("-").collect();
-    let year = date_parts[0].parse::<i32>().unwrap();
-    let month = date_parts[1].parse::<u32>().unwrap();
-    let day = date_parts[2].parse::<u32>().unwrap();
-    let format: String = serde_json::from_value(h.param(1).unwrap().value().clone()).unwrap();
-    let dt = Utc.ymd(year, month, day).and_hms(12, 0, 9);
-    let result = dt.format(&format).to_string();
+    if !h.param(0).unwrap().is_value_missing() {
+        let date: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
+        let date_parts: Vec<&str> = date.split("-").collect();
+        let year = date_parts[0].parse::<i32>().unwrap();
+        let month = date_parts[1].parse::<u32>().unwrap();
+        let day = date_parts[2].parse::<u32>().unwrap();
+        let format: String = serde_json::from_value(h.param(1).unwrap().value().clone()).unwrap();
+        let dt = Utc.ymd(year, month, day).and_hms(12, 0, 9);
+        let result = dt.format(&format).to_string();
 
-    out.write(&result)?;
+        out.write(&result)?;
+    }
 
     Ok(())
 }
@@ -273,6 +290,7 @@ fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: Templ
     // Register helpers
     hbs.register_helper("format_date", Box::new(format_date_helper));
 
+    // Render
     let render = hbs.render("_main", &data);
 
     if render.is_ok() {
@@ -285,7 +303,12 @@ fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: Templ
 
 /// Deletes all files and directories from within the /public directory.
 fn empty_public_dir() {
-    let path = &format!("{}{}", get_dir(), "/public");
+    let config = get_config();
+    let path = &format!("{}{}", config.dir, "/public");
+
+    if fs::read_dir(path).is_err() {
+        return;
+    }
 
     for entry in fs::read_dir(path).unwrap() {
         let file = entry.unwrap();
@@ -308,7 +331,7 @@ fn empty_public_dir() {
 }
 
 /// Writes given `contents` into given `path. Parent directories do not have
-/// exist as it will also create them itself if they don't exist.
+/// to exist as they will also be created if they don't.
 fn write_to_path(path: &str, contents: String) {
     let path = Path::new(&path);
     let prefix = path.parent().unwrap();
@@ -322,7 +345,8 @@ fn write_to_path(path: &str, contents: String) {
 /// Compiles all content items within the root directory with given
 /// global Handlebars `data`, resulting in HTML files written to disk.
 fn compile_content_items(data: &TemplateData) {
-    let read_path = Path::new(get_dir());
+    let config = get_config();
+    let read_path = Path::new(&config.dir);
     let content_files = find_files(read_path, &FileType::Markdown);
     let content_items = parse_content_files(&content_files);
     let partials = find_partials();
@@ -340,16 +364,23 @@ fn compile_content_items(data: &TemplateData) {
             ..data.clone()
         };
 
-        let template_path = format!(
-            "{}{}{}{}",
-            get_dir(),
-            "/_layouts/",
-            item.meta["layout"].as_str().to_string(),
-            ".hbs"
-        );
+        let layout: String;
 
+        if item.meta.get("layout").is_some() {
+            layout = item.meta.get("layout").unwrap().to_string();
+        } else {
+            layout = String::from("default");
+        }
+
+        let template_path = format!("{}{}{}{}", get_config().dir, "/_layouts/", layout, ".hbs");
         let html = build_html(template_path, partials.clone(), item_data);
-        let write_path = format!("{}{}{}{}", get_dir(), "/public", item.slug, "/index.html");
+        let write_path = format!(
+            "{}{}{}{}",
+            get_config().dir,
+            "/public",
+            item.slug,
+            "/index.html"
+        );
 
         write_to_path(&write_path, html);
     }
@@ -359,23 +390,27 @@ fn compile_content_items(data: &TemplateData) {
 /// root directory with given Handlebars `data`, resulting in HTML files
 /// written to disk.
 fn compile_template_items(data: &TemplateData) {
-    let read_path = Path::new(get_dir());
+    let config = get_config();
+    let read_path = Path::new(&config.dir);
     let partials = find_partials();
     let template_files = find_files(read_path, &FileType::HandlebarsPages);
 
     for file in template_files {
-        let slug = file.to_string().replace(get_dir(), "").replace(".hbs", "");
+        let slug = file
+            .to_string()
+            .replace(&config.dir, "")
+            .replace(".hbs", "");
         println!("Building {}", slug);
 
         let html = build_html(file, partials.clone(), data.clone());
-        let write_path = format!("{}{}{}", get_dir(), "/public", slug);
+        let write_path = format!("{}{}{}", get_config().dir, "/public", slug);
 
         write_to_path(&write_path, html);
     }
 }
 
-/// Returns a value of a given `s` by a given `field`. Enables the
-/// retrieval of Struct values by key using a string.
+/// Returns a value of a given `s` by a given `field`. Enables the retrieval
+/// of Struct values by key using a string.
 fn get_field_by_name<T, R>(s: T, field: &str) -> R
 where
     T: Serialize,
@@ -398,8 +433,10 @@ where
     }
 }
 
-fn sort_content_items(content_items: &mut Vec<ContentItem>, by: String, order: String) {
-    content_items.sort_by(|a, b| {
+/// Sorts given `items` by given `by` in given `order`. Supports top-level struct
+/// keys as `by` as well as meta-level keys like `meta.date`.
+fn sort_content_items(items: &mut Vec<ContentItem>, by: String, order: String) {
+    items.sort_by(|a, b| {
         if by.contains("meta.") {
             let meta_key = by.replace("meta.", "");
             let comp_a = a.meta.get(&meta_key);
@@ -423,14 +460,12 @@ fn sort_content_items(content_items: &mut Vec<ContentItem>, by: String, order: S
     });
 }
 
-fn dsl_sort_order_limit(
-    dsl: ContentDSLItem,
-    content_items: &mut Vec<ContentItem>,
-) -> Vec<ContentItem> {
+/// Sort, order and limit given `items` according to given `dsl`.
+fn dsl_sort_order_limit(dsl: ContentDSLItem, items: &mut Vec<ContentItem>) -> Vec<ContentItem> {
     // Sort and order?
     if dsl.sort_by.is_some() {
         sort_content_items(
-            content_items,
+            items,
             dsl.sort_by.unwrap_or(String::from("slug")),
             dsl.order.unwrap_or(String::from("desc")),
         );
@@ -438,18 +473,25 @@ fn dsl_sort_order_limit(
 
     // Limit?
     if dsl.limit.is_some() {
-        content_items.truncate(dsl.limit.unwrap());
+        items.truncate(dsl.limit.unwrap());
     }
 
-    return content_items.to_vec();
+    return items.to_vec();
 }
 
-fn dsl_group_by_grouper(content_item: &ContentItem, by: &String) -> String {
+/// Returns a grouper from a given `item` according to given `by`. The
+/// `by` can be any top-level struct key as well as meta-level key, such as
+/// `meta.date`. In the case of `meta.date`, it also supports an additional
+/// modifier such as `meta.date|year`, to group by year. `month` and `day`
+/// are also supported.
+fn dsl_group_by_grouper(item: &ContentItem, by: &String) -> String {
     let grouper: String;
 
+    // Meta-key grouping.
     if by.contains("meta.") {
         let meta_key: String;
 
+        // Construct key
         if by.contains("|") {
             let whole_key = by.replace("meta.", "");
             let meta_key_split: Vec<&str> = whole_key.split("|").collect();
@@ -458,6 +500,7 @@ fn dsl_group_by_grouper(content_item: &ContentItem, by: &String) -> String {
             meta_key = by.replace("meta.", "");
         }
 
+        // Construct modifier
         let meta_modifier: String;
 
         if by.contains("|") {
@@ -468,51 +511,104 @@ fn dsl_group_by_grouper(content_item: &ContentItem, by: &String) -> String {
             meta_modifier = String::new();
         };
 
-        let value = content_item.meta.get(&meta_key).unwrap().to_string();
+        // Construct value
+        let value;
 
-        // Special date mungling
+        if item.meta.get(&meta_key).is_some() {
+            value = item.meta.get(&meta_key).unwrap().to_string();
+        } else {
+            value = String::new();
+        };
+
+        // If we're grouping by meta.date and have `year` as a modifier
         if meta_key == "date" && meta_modifier == "year" {
             let date_parts: Vec<&str> = value.split("-").collect();
             grouper = date_parts[0].to_string();
+        // If we're grouping by meta.date and have `month` as a modifier
         } else if meta_key == "date" && meta_modifier == "month" {
             let date_parts: Vec<&str> = value.split("-").collect();
             grouper = date_parts[1].to_string();
+        // If we're grouping by meta.date and have `day` as a modifier
         } else if meta_key == "date" && meta_modifier == "day" {
             let date_parts: Vec<&str> = value.split("-").collect();
             grouper = date_parts[2].to_string();
+        // Otherwise, the value itself is the grouper
         } else {
             grouper = value;
         }
+    // Group by top-level field key.
     } else {
-        grouper = get_field_by_name(content_item, &by);
+        grouper = get_field_by_name(item, &by);
     }
 
     return grouper;
 }
 
-fn dsl_group_by(content_items: Vec<ContentItem>, by: String) -> HashMap<String, Vec<ContentItem>> {
-    if by.is_empty() {
-        return HashMap::new();
+/// Order given `groups` in either a descending or ascending order. Given
+/// `order` must either be a `asc` or `desc` string.
+fn dsl_group_order(
+    groups: IndexMap<String, Vec<ContentItem>>,
+    order: String,
+) -> IndexMap<String, Vec<ContentItem>> {
+    let mut ordered_grouped_content: IndexMap<String, Vec<ContentItem>> = IndexMap::new();
+    let mut keys: Vec<String> = Vec::new();
+
+    for key in groups.keys() {
+        keys.push(key.to_string());
     }
 
-    let mut grouped_content: HashMap<String, Vec<ContentItem>> = HashMap::new();
+    keys.sort();
 
-    for content_item in content_items {
-        let item = content_item.clone();
+    if order == "desc" {
+        keys.reverse();
+    }
+
+    for key in keys {
+        let scoped_key = key.clone();
+        ordered_grouped_content.insert(scoped_key, groups.get(&key).unwrap().to_vec());
+    }
+
+    return ordered_grouped_content;
+}
+
+/// Group given `items` by given `by` and, optionally, order the groups by
+/// given `order`.
+fn dsl_group(
+    items: Vec<ContentItem>,
+    by: String,
+    order: Option<String>,
+) -> IndexMap<String, Vec<ContentItem>> {
+    // If by is not provided, return nothing. This is so that the
+    // `compose_content_from_dsl` function would know which enum
+    // to return, as in grouped or normal.
+    if by.is_empty() {
+        return IndexMap::new();
+    }
+
+    // Groups the items by a given grouper, which is a string
+    // indicating a top-level struct key, or a meta key via "meta.{key}".
+    let mut grouped_content: IndexMap<String, Vec<ContentItem>> = IndexMap::new();
+
+    for item in items {
         let grouper = dsl_group_by_grouper(&item, &by);
         let mut grouped_content_items: Vec<ContentItem> = grouped_content
-            .get(&grouper.to_string())
+            .get(&grouper)
             .unwrap_or(&Vec::new())
             .to_vec();
 
         grouped_content_items.push(item);
 
-        if grouped_content.is_empty() {
+        if grouped_content.get(&grouper).is_none() {
             grouped_content.insert(grouper, grouped_content_items);
         } else {
             grouped_content.remove(&grouper);
             grouped_content.insert(grouper, grouped_content_items);
         }
+    }
+
+    // Order the groups by either descending (default) or ascending order.
+    if order.is_some() {
+        grouped_content = dsl_group_order(grouped_content, order.unwrap());
     }
 
     return grouped_content;
@@ -522,7 +618,8 @@ fn dsl_group_by(content_items: Vec<ContentItem>, by: String) -> HashMap<String, 
 /// create data-sets from the available content files, further enabling more
 /// dynamic-ish site creation.
 fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
-    let file_contents = fs::read_to_string(format!("{}{}", get_dir(), "/content.json"));
+    let config = get_config();
+    let file_contents = fs::read_to_string(format!("{}{}", config.dir, "/content.json"));
     let contents = file_contents.unwrap_or_default();
     let dsl: Result<Vec<ContentDSLItem>, serde_json::Error> = serde_json::from_str(&contents);
 
@@ -534,16 +631,17 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
 
     for dsl_item in dsl.unwrap_or(Vec::new()) {
         let item = dsl_item.clone();
-        let path_str = format!("{}{}{}", get_dir(), "/", dsl_item.from);
+        let path_str = format!("{}{}{}", config.dir, "/", dsl_item.from);
         let content_files = find_files(Path::new(&path_str), &FileType::Markdown);
         let mut parsed_content_files = parse_content_files(&content_files);
 
         if dsl_item.group_by.is_some() {
             content.insert(
                 dsl_item.name,
-                TemplateContentDSLItem::Grouped(dsl_group_by(
+                TemplateContentDSLItem::Grouped(dsl_group(
                     dsl_sort_order_limit(item, &mut parsed_content_files),
-                    dsl_item.group_by.unwrap_or(String::from("")),
+                    dsl_item.group_by.unwrap(),
+                    dsl_item.group_by_order,
                 )),
             );
         } else {
@@ -576,7 +674,8 @@ fn compose_global_template_data() -> TemplateData {
 /// Return `SiteInfo` from the `site.json` file.
 #[cached(time = 2)]
 fn get_site_info() -> serde_json::Value {
-    let file_contents = fs::read_to_string(format!("{}{}", get_dir(), "/site.json"));
+    let config = get_config();
+    let file_contents = fs::read_to_string(format!("{}{}", config.dir, "/site.json"));
     let contents = file_contents.unwrap_or(String::new());
 
     return serde_json::from_str(&contents).unwrap();
@@ -584,14 +683,15 @@ fn get_site_info() -> serde_json::Value {
 
 /// Copies all files with `FileType::Asset` into the /public directory.
 fn copy_assets() {
-    let assets = find_files(Path::new(get_dir()), &FileType::Asset);
+    let config = get_config();
+    let assets = find_files(Path::new(&config.dir), &FileType::Asset);
 
     for asset in assets {
-        let relative_path = asset.replace(get_dir(), "");
+        let relative_path = asset.replace(&config.dir, "");
         println!("Copying {}", relative_path);
         let action = fs::copy(
             asset,
-            format!("{}{}{}", get_dir(), "/public", relative_path),
+            format!("{}{}{}", config.dir, "/public", relative_path),
         );
 
         if action.is_err() {
@@ -601,6 +701,9 @@ fn copy_assets() {
 }
 
 fn main() {
+    // Prepare dotenv
+    dotenv().ok();
+
     // Empty the public dir
     empty_public_dir();
 
