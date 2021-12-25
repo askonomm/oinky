@@ -2,7 +2,7 @@ use cached::proc_macro::cached;
 use chrono::prelude::*;
 use comrak::{markdown_to_html, ComrakOptions};
 use dotenv::dotenv;
-use handlebars::{Context, Handlebars, Template, Helper, HelperResult, Output, RenderContext, Renderable};
+use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext, Renderable};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::de::DeserializeOwned;
@@ -238,7 +238,7 @@ fn parse_content_files(files: &Vec<String>) -> Vec<ContentItem> {
 
 /// Handlebars date formatter helper.
 /// Usage:
-/// 
+///
 /// ```handlebars
 /// {{format_date date-string "%Y %d %m"}}
 /// ```
@@ -267,7 +267,7 @@ fn format_date_helper(
 
 /// Handlebars slug checking helper.
 /// Usage:
-/// 
+///
 /// ```handlebars
 /// {{#is_slug "/archive/index.html"}}
 /// // my code goes here
@@ -297,7 +297,7 @@ fn is_slug_helper(
 
 /// Handlebars slug checking helper.
 /// Usage:
-/// 
+///
 /// ```handlebars
 /// {{#unless_slug "/archive/index.html"}}
 /// // my code goes here
