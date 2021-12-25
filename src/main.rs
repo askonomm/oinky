@@ -70,6 +70,7 @@ struct ContentDSLItem {
 #[derive(Debug, Clone)]
 struct Config {
     dir: String,
+    utc_offset: i32,
 }
 
 /// Prints an error `message` to stdout and subsequently exits the program.
@@ -92,7 +93,17 @@ fn get_config() -> Config {
         dir = env::current_dir().unwrap().to_str().unwrap().to_string();
     }
 
-    return Config { dir };
+    let mut utc_offset = 0;
+    let env_utc_offset = env::var("UTC_OFFSET");
+
+    if env_utc_offset.is_ok() {
+        utc_offset = env_utc_offset.unwrap().parse::<i32>().unwrap();
+    }
+
+    return Config { 
+        dir,
+        utc_offset,
+    };
 }
 
 /// Recursively browses directories within the given `dir` for any and all
@@ -215,7 +226,7 @@ fn parse_content_files(files: &Vec<String>) -> Vec<ContentItem> {
         let file_contents = fs::read_to_string(file);
         let contents = file_contents.unwrap_or(String::new());
         let meta = parse_content_file_meta(&contents);
-        let entry = String::new(); // parse_content_file_entry(&contents);
+        let entry = parse_content_file_entry(&contents);
         let path = file.to_string();
         let slug = file
             .to_string()
@@ -251,7 +262,15 @@ fn date_helper(
 ) -> HelperResult {
     if !h.param(0).unwrap().is_value_missing() {
         let format: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
-        let dt = Utc::now();
+        let utc_offset = env::var("UTC_OFFSET");
+        let mut hours = 0;
+
+        if utc_offset.is_ok() {
+            hours = utc_offset.unwrap().parse::<i32>().unwrap();
+        }
+
+        let offset = FixedOffset::east_opt(hours*60*60).expect("UTC offset out of bound, min -12, max 12");
+        let dt = Utc::now().with_timezone(&offset);
         let result = dt.format(&format).to_string();
 
         out.write(&result)?;
@@ -280,7 +299,15 @@ fn format_date_helper(
         let month = date_parts[1].parse::<u32>().unwrap();
         let day = date_parts[2].parse::<u32>().unwrap();
         let format: String = serde_json::from_value(h.param(1).unwrap().value().clone()).unwrap();
-        let dt = Utc.ymd(year, month, day).and_hms(12, 0, 9);
+        let utc_offset = env::var("UTC_OFFSET");
+        let mut hours = 0;
+
+        if utc_offset.is_ok() {
+            hours = utc_offset.unwrap().parse::<i32>().unwrap();
+        }
+
+        let offset = FixedOffset::east_opt(hours*60*60).expect("UTC offset out of bound, min -12, max 12");
+        let dt = Utc.ymd(year, month, day).with_timezone(&offset);
         let result = dt.format(&format).to_string();
 
         out.write(&result)?;
