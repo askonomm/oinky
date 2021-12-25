@@ -262,13 +262,8 @@ fn date_helper(
 ) -> HelperResult {
     if !h.param(0).unwrap().is_value_missing() {
         let format: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
-        let utc_offset = env::var("UTC_OFFSET");
-        let mut hours = 0;
-
-        if utc_offset.is_ok() {
-            hours = utc_offset.unwrap().parse::<i32>().unwrap();
-        }
-
+        let config = get_config();
+        let hours = config.utc_offset;
         let offset = FixedOffset::east_opt(hours*60*60).expect("UTC offset out of bound, min -12, max 12");
         let dt = Utc::now().with_timezone(&offset);
         let result = dt.format(&format).to_string();
@@ -299,13 +294,8 @@ fn format_date_helper(
         let month = date_parts[1].parse::<u32>().unwrap();
         let day = date_parts[2].parse::<u32>().unwrap();
         let format: String = serde_json::from_value(h.param(1).unwrap().value().clone()).unwrap();
-        let utc_offset = env::var("UTC_OFFSET");
-        let mut hours = 0;
-
-        if utc_offset.is_ok() {
-            hours = utc_offset.unwrap().parse::<i32>().unwrap();
-        }
-
+        let config = get_config();
+        let hours = config.utc_offset;
         let offset = FixedOffset::east_opt(hours*60*60).expect("UTC offset out of bound, min -12, max 12");
         let dt = Utc.ymd(year, month, day).with_timezone(&offset);
         let result = dt.format(&format).to_string();
