@@ -62,6 +62,7 @@ struct ContentDSLItem {
     sort_by: Option<String>,
     group_by: Option<String>,
     group_by_order: Option<String>,
+    group_by_limit: Option<usize>,
     order: Option<String>,
     limit: Option<usize>,
 }
@@ -552,9 +553,10 @@ fn dsl_group_by_grouper(item: &ContentItem, by: &String) -> String {
 
 /// Order given `groups` in either a descending or ascending order. Given
 /// `order` must either be a `asc` or `desc` string.
-fn dsl_group_order(
+fn dsl_group_order_limit(
     groups: IndexMap<String, Vec<ContentItem>>,
     order: String,
+    limit: Option<usize>,
 ) -> IndexMap<String, Vec<ContentItem>> {
     let mut ordered_grouped_content: IndexMap<String, Vec<ContentItem>> = IndexMap::new();
     let mut keys: Vec<String> = Vec::new();
@@ -563,12 +565,19 @@ fn dsl_group_order(
         keys.push(key.to_string());
     }
 
+    // Order
     keys.sort();
 
     if order == "desc" {
         keys.reverse();
     }
 
+    // Limit
+    if limit.is_some() {
+        keys.truncate(limit.unwrap());
+    }
+
+    // Construct IndexMap
     for key in keys {
         let scoped_key = key.clone();
         ordered_grouped_content.insert(scoped_key, groups.get(&key).unwrap().to_vec());
@@ -583,6 +592,7 @@ fn dsl_group(
     items: Vec<ContentItem>,
     by: String,
     order: Option<String>,
+    limit: Option<usize>,
 ) -> IndexMap<String, Vec<ContentItem>> {
     // If by is not provided, return nothing. This is so that the
     // `compose_content_from_dsl` function would know which enum
@@ -614,7 +624,7 @@ fn dsl_group(
 
     // Order the groups by either descending (default) or ascending order.
     if order.is_some() {
-        grouped_content = dsl_group_order(grouped_content, order.unwrap());
+        grouped_content = dsl_group_order_limit(grouped_content, order.unwrap(), limit);
     }
 
     return grouped_content;
@@ -648,6 +658,7 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
                     dsl_sort_order_limit(item, &mut parsed_content_files),
                     dsl_item.group_by.unwrap(),
                     dsl_item.group_by_order,
+                    dsl_item.group_by_limit,
                 )),
             );
         } else {
