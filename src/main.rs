@@ -2,7 +2,7 @@ use cached::proc_macro::cached;
 use chrono::prelude::*;
 use comrak::{markdown_to_html, ComrakOptions};
 use dotenv::dotenv;
-use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext};
+use handlebars::{Context, Handlebars, Template, Helper, HelperResult, Output, RenderContext, Renderable};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::de::DeserializeOwned;
@@ -28,14 +28,14 @@ struct TemplatePartial {
     path: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 enum TemplateContentDSLItem {
     Normal(Vec<ContentItem>),
     Grouped(IndexMap<String, Vec<ContentItem>>),
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TemplateData {
     site: serde_json::Value,
     content: HashMap<String, TemplateContentDSLItem>,
@@ -215,7 +215,7 @@ fn parse_content_files(files: &Vec<String>) -> Vec<ContentItem> {
         let file_contents = fs::read_to_string(file);
         let contents = file_contents.unwrap_or(String::new());
         let meta = parse_content_file_meta(&contents);
-        let entry = parse_content_file_entry(&contents);
+        let entry = String::new(); // parse_content_file_entry(&contents);
         let path = file.to_string();
         let slug = file
             .to_string()
@@ -265,6 +265,66 @@ fn format_date_helper(
     Ok(())
 }
 
+/// Handlebars slug checking helper.
+/// Usage:
+/// 
+/// ```handlebars
+/// {{#is_slug "/archive/index.html"}}
+/// // my code goes here
+/// {{/is_slug}}
+/// ```
+fn is_slug_helper(
+    h: &Helper,
+    r: &Handlebars,
+    c: &Context,
+    rc: &mut RenderContext,
+    out: &mut dyn Output,
+) -> HelperResult {
+    let mut x = rc.clone();
+
+    if !h.param(0).unwrap().is_value_missing() {
+        let path: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
+        let data: TemplateData = serde_json::from_value(c.data().clone()).unwrap();
+        let slug = data.slug;
+
+        if slug.is_some() && slug.unwrap() == path && h.template().is_some() {
+            h.template().unwrap().render(&r, &c, &mut x, out).unwrap();
+        }
+    }
+
+    Ok(())
+}
+
+/// Handlebars slug checking helper.
+/// Usage:
+/// 
+/// ```handlebars
+/// {{#unless_slug "/archive/index.html"}}
+/// // my code goes here
+/// {{/unless_slug}}
+/// ```
+fn unless_slug_helper(
+    h: &Helper,
+    r: &Handlebars,
+    c: &Context,
+    rc: &mut RenderContext,
+    out: &mut dyn Output,
+) -> HelperResult {
+    let mut x = rc.clone();
+
+    if !h.param(0).unwrap().is_value_missing() {
+        let path: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
+        let data: TemplateData = serde_json::from_value(c.data().clone()).unwrap();
+        let slug = data.slug;
+
+        if slug.is_some() && slug.unwrap() != path && h.template().is_some() {
+            h.template().unwrap().render(&r, &c, &mut x, out).unwrap();
+        }
+    }
+
+    Ok(())
+}
+
 /// Builds HTML from a Handlebars template in a path `template_path`, by fusing
 /// together `data` and registering any given `partials`. Returns a HTML string.
 fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: TemplateData) -> String {
@@ -296,6 +356,8 @@ fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: Templ
 
     // Register helpers
     hbs.register_helper("format_date", Box::new(format_date_helper));
+    hbs.register_helper("is_slug", Box::new(is_slug_helper));
+    hbs.register_helper("unless_slug", Box::new(unless_slug_helper));
 
     // Render
     let render = hbs.render("_main", &data);
@@ -407,9 +469,15 @@ fn compile_template_items(data: &TemplateData) {
             .to_string()
             .replace(&config.dir, "")
             .replace(".hbs", "");
+
         println!("Building {}", slug);
 
-        let html = build_html(file, partials.clone(), data.clone());
+        let template_data = TemplateData {
+            slug: Some(slug.clone()),
+            ..data.clone()
+        };
+
+        let html = build_html(file, partials.clone(), template_data);
         let write_path = format!("{}{}{}", get_config().dir, "/public", slug);
 
         write_to_path(&write_path, html);
