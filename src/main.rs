@@ -236,6 +236,30 @@ fn parse_content_files(files: &Vec<String>) -> Vec<ContentItem> {
     return content_items;
 }
 
+/// Handlebars date helper.
+/// Usage:
+///
+/// ```handlebars
+/// {{date "%Y %d %m"}}
+/// ```
+fn date_helper(
+    h: &Helper,
+    _: &Handlebars,
+    _: &Context,
+    _rc: &mut RenderContext,
+    out: &mut dyn Output,
+) -> HelperResult {
+    if !h.param(0).unwrap().is_value_missing() {
+        let format: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
+        let dt = Utc::now();
+        let result = dt.format(&format).to_string();
+
+        out.write(&result)?;
+    }
+
+    Ok(())
+}
+
 /// Handlebars date formatter helper.
 /// Usage:
 ///
@@ -355,6 +379,7 @@ fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: Templ
     }
 
     // Register helpers
+    hbs.register_helper("date", Box::new(date_helper));
     hbs.register_helper("format_date", Box::new(format_date_helper));
     hbs.register_helper("is_slug", Box::new(is_slug_helper));
     hbs.register_helper("unless_slug", Box::new(unless_slug_helper));
