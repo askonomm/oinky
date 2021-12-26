@@ -205,6 +205,11 @@ fn find_partials() -> Vec<TemplatePartial> {
 /// then returns as a key-value HashMap.
 fn parse_content_file_meta(contents: &str) -> HashMap<String, String> {
     let regex = Regex::new(r"(?s)^(---)(.*?)(---|\.\.\.)").unwrap();
+
+    if regex.find(&contents).is_none() {
+        return HashMap::new();
+    }
+    
     let meta_block = regex.find(&contents).unwrap().as_str();
     let meta_lines = meta_block.lines();
     let mut meta: HashMap<String, String> = HashMap::new();
