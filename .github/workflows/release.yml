@@ -49,8 +49,8 @@ jobs:
       - name: 'Publish'
         uses: actions/upload-artifact@v2-preview
         with:
-          name: 'oink-linux'
-          path: target/release/oink
+          name: 'oinky-linux'
+          path: target/release/oinky
 
       - name: 'Upload'
         id: upload-release-asset
@@ -59,8 +59,8 @@ jobs:
           GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
         with:
           upload_url: ${{steps.create_release.outputs.upload_url}}
-          asset_path: target/release/oink
-          asset_name: oink-linux
+          asset_path: target/release/oinky
+          asset_name: oinky-linux
           asset_content_type: application/octet-stream
 
       - name: 'Write Upload URL To File'
