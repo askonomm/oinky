@@ -3,6 +3,7 @@ use chrono::prelude::*;
 use comrak::{markdown_to_html, ComrakOptions};
 use dotenv::dotenv;
 use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext, Renderable};
+use hotwatch::{Event, Hotwatch};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::de::DeserializeOwned;
@@ -14,6 +15,7 @@ use std::env;
 use std::fs;
 use std::io::prelude::*;
 use std::path::Path;
+use std::thread;
 
 enum FileType {
     Handlebars,
@@ -79,8 +81,8 @@ fn err_out(message: String) {
     std::process::exit(1);
 }
 
-/// Returns runtime config for Oink such as the directory
-/// where to run Oink in. If dotenv values for these exist then it will
+/// Returns runtime config for Oinky such as the directory
+/// where to run Oinky in. If dotenv values for these exist then it will
 /// use those instead.
 #[cached]
 fn get_config() -> Config {
@@ -100,10 +102,7 @@ fn get_config() -> Config {
         utc_offset = env_utc_offset.unwrap().parse::<i32>().unwrap();
     }
 
-    return Config { 
-        dir,
-        utc_offset,
-    };
+    return Config { dir, utc_offset };
 }
 
 /// Recursively browses directories within the given `dir` for any and all
@@ -264,7 +263,8 @@ fn date_helper(
         let format: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
         let config = get_config();
         let hours = config.utc_offset;
-        let offset = FixedOffset::east_opt(hours*60*60).expect("UTC offset out of bound, min -12, max 12");
+        let offset = FixedOffset::east_opt(hours * 60 * 60)
+            .expect("UTC offset out of bound, min -12, max 12");
         let dt = Utc::now().with_timezone(&offset);
         let result = dt.format(&format).to_string();
 
@@ -296,7 +296,8 @@ fn format_date_helper(
         let format: String = serde_json::from_value(h.param(1).unwrap().value().clone()).unwrap();
         let config = get_config();
         let hours = config.utc_offset;
-        let offset = FixedOffset::east_opt(hours*60*60).expect("UTC offset out of bound, min -12, max 12");
+        let offset = FixedOffset::east_opt(hours * 60 * 60)
+            .expect("UTC offset out of bound, min -12, max 12");
         let dt = Utc.ymd(year, month, day).with_timezone(&offset);
         let result = dt.format(&format).to_string();
 
@@ -827,7 +828,9 @@ fn copy_assets() {
     }
 }
 
-fn main() {
+/// Runs Oinky on the current directory and compiles an entire static site
+/// out of given information.
+fn compile() {
     // Prepare dotenv
     dotenv().ok();
 
@@ -845,4 +848,47 @@ fn main() {
 
     // Move assets to /public dir
     copy_assets();
+}
+
+/// Potentially runs Oinky when a given `path` is determined to be something
+/// that changes that would require the site generator to run again. Used by
+/// the watcher.
+fn potentially_compile(path: String) {
+    let config = get_config();
+    let relative_path = path.replace(&config.dir, "");
+
+    if !relative_path.starts_with("/.git/") && !relative_path.starts_with("/public/") {
+        compile();
+    }
+}
+
+/// Watches for file changes and potentally runs Oinky if an interesting enough
+/// file has been created, changed, renamed or deleted.
+fn watch() {
+    println!("Watching ...");
+    let config = get_config();
+    let mut h = Hotwatch::new().expect("Watcher failed to initialize.");
+
+    h.watch(config.dir, |event: Event| match event {
+        Event::Write(path) => potentially_compile(path.to_str().unwrap().to_string()),
+        Event::Create(path) => potentially_compile(path.to_str().unwrap().to_string()),
+        Event::Rename(_, path) => potentially_compile(path.to_str().unwrap().to_string()),
+        Event::Remove(path) => potentially_compile(path.to_str().unwrap().to_string()),
+        _ => (),
+    })
+    .expect("Failed to watch directory.");
+
+    thread::park();
+}
+
+fn main() {
+    // Run Oinky
+    compile();
+
+    let args: Vec<String> = env::args().collect();
+
+    // Potentially run a watcher
+    if args.contains(&String::from("watch")) {
+        watch();
+    }
 }
