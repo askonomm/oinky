@@ -479,8 +479,6 @@ fn compile_content_items(data: &TemplateData) {
     let partials = find_partials();
 
     for content_item in content_items {
-        println!("Building {}", content_item.slug);
-
         let item = content_item.clone();
         let item_data = TemplateData {
             path: Some(content_item.path),
@@ -491,14 +489,13 @@ fn compile_content_items(data: &TemplateData) {
             ..data.clone()
         };
 
-        let layout: String;
-
-        if item.meta.get("layout").is_some() {
-            layout = item.meta.get("layout").unwrap().to_string();
-        } else {
-            layout = String::from("default");
+        if item.meta.get("layout").is_none() {
+            return;
         }
 
+        println!("Building {}", item.slug);
+
+        let layout = item.meta.get("layout").unwrap().to_string();
         let template_path = format!("{}{}{}{}", get_config().dir, "/_layouts/", layout, ".hbs");
         let html = build_html(template_path, partials.clone(), item_data);
         let write_path = format!(
