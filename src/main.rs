@@ -110,8 +110,13 @@ fn get_config() -> Config {
 /// string is an absolute path to the file.
 fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
     let mut files: Vec<String> = Vec::new();
+    let read_dir = fs::read_dir(dir);
 
-    for entry in fs::read_dir(dir).unwrap() {
+    if read_dir.is_err() {
+        return Vec::new();
+    }
+
+    for entry in read_dir.unwrap() {
         let path = entry.unwrap().path();
         let path_str = path.as_path().display().to_string();
 
@@ -806,7 +811,7 @@ fn get_site_info() -> serde_json::Value {
     let file_contents = fs::read_to_string(format!("{}{}", config.dir, "/site.json"));
     let contents = file_contents.unwrap_or(String::new());
 
-    return serde_json::from_str(&contents).unwrap();
+    return serde_json::from_str(&contents).unwrap_or(serde_json::from_str("{}").unwrap());
 }
 
 /// Copies all files with `FileType::Asset` into the /public directory.
