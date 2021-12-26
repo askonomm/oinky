@@ -131,26 +131,36 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
                 }
             }
             FileType::HandlebarsPages => {
-                if (!path_str.contains("_layouts") && !path_str.contains("_partials"))
-                    && (path_str.ends_with(".hbs") || path_str.ends_with(".handlebars"))
+                if (!path_str.contains("_layouts") 
+                    && !path_str.contains("_partials")
+                    && !path_str.contains("public"))
+                    && (path_str.ends_with(".hbs") 
+                    || path_str.ends_with(".handlebars"))
                 {
                     files.push(path_str);
                 }
             }
             FileType::Markdown => {
-                if path_str.ends_with(".md") || path_str.ends_with(".markdown") {
+                if !path_str.contains("_layouts") 
+                    && !path_str.contains("_partials")
+                    && !path_str.contains("public")
+                    && path_str.ends_with(".md") 
+                    || path_str.ends_with(".markdown") {
                     files.push(path_str);
                 }
             }
             FileType::Asset => {
-                if path_str.ends_with(".css")
-                    || path_str.ends_with(".js")
-                    || path_str.ends_with(".jpg")
-                    || path_str.ends_with(".png")
-                    || path_str.ends_with(".svg")
-                    || path_str.ends_with(".ttf")
-                    || path_str.ends_with(".woff")
-                    || path_str.ends_with(".woff2")
+                if !path_str.ends_with(".hbs")
+                    && !path_str.ends_with(".handlebars")
+                    && !path_str.ends_with(".md")
+                    && !path_str.ends_with(".markdown")
+                    && !path_str.ends_with("site.json")
+                    && !path_str.ends_with("content.json")
+                    && !path_str.contains("_layouts")
+                    && !path_str.contains("_partials")
+                    && !path_str.contains(".git")
+                    && !path_str.contains("public")
+                    && !path.is_dir()
                 {
                     files.push(path_str);
                 }
