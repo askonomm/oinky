@@ -209,7 +209,7 @@ fn parse_content_file_meta(contents: &str) -> HashMap<String, String> {
     if regex.find(&contents).is_none() {
         return HashMap::new();
     }
-    
+
     let meta_block = regex.find(&contents).unwrap().as_str();
     let meta_lines = meta_block.lines();
     let mut meta: HashMap<String, String> = HashMap::new();
@@ -348,8 +348,13 @@ fn is_slug_helper(
         let path: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
         let data: TemplateData = serde_json::from_value(c.data().clone()).unwrap();
         let slug = data.slug;
+        let regex = Regex::new(&path);
 
-        if slug.is_some() && slug.unwrap() == path && h.template().is_some() {
+        if regex.is_err() || slug.is_none() {
+            h.inverse().unwrap();
+        }
+        
+        if regex.unwrap().is_match(&slug.unwrap()) && h.template().is_some() {
             h.template().unwrap().render(&r, &c, &mut x, out).unwrap();
         }
     }
@@ -378,8 +383,13 @@ fn unless_slug_helper(
         let path: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
         let data: TemplateData = serde_json::from_value(c.data().clone()).unwrap();
         let slug = data.slug;
+        let regex = Regex::new(&path);
 
-        if slug.is_some() && slug.unwrap() != path && h.template().is_some() {
+        if regex.is_err() || slug.is_none() {
+            h.inverse().unwrap();
+        }
+
+        if !regex.unwrap().is_match(&slug.unwrap()) && h.template().is_some() {
             h.template().unwrap().render(&r, &c, &mut x, out).unwrap();
         }
     }
