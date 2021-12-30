@@ -134,6 +134,7 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
                 if (!path_str.contains("_layouts") 
                     && !path_str.contains("_partials")
                     && !path_str.contains("public"))
+                    && !path_str.contains("node_modules")
                     && (path_str.ends_with(".hbs") 
                     || path_str.ends_with(".handlebars"))
                 {
@@ -144,8 +145,9 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
                 if !path_str.contains("_layouts") 
                     && !path_str.contains("_partials")
                     && !path_str.contains("public")
-                    && path_str.ends_with(".md") 
-                    || path_str.ends_with(".markdown") {
+                    && !path_str.contains("node_modules")
+                    && (path_str.ends_with(".md") 
+                    || path_str.ends_with(".markdown")) {
                     files.push(path_str);
                 }
             }
@@ -491,6 +493,7 @@ fn compile_content_items(data: &TemplateData) {
     let config = get_config();
     let read_path = Path::new(&config.dir);
     let content_files = find_files(read_path, &FileType::Markdown);
+    println!("{:#?}", content_files);
     let content_items = parse_content_files(&content_files);
     let partials = find_partials();
 
