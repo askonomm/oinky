@@ -159,6 +159,7 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
                     && !path_str.contains("_layouts")
                     && !path_str.contains("_partials")
                     && !path_str.contains(".git")
+                    && !path_str.contains("node_modules")
                     && !path_str.contains("public")
                     && !path.is_dir()
                 {
