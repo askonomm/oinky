@@ -493,7 +493,6 @@ fn compile_content_items(data: &TemplateData) {
     let config = get_config();
     let read_path = Path::new(&config.dir);
     let content_files = find_files(read_path, &FileType::Markdown);
-    println!("{:#?}", content_files);
     let content_items = parse_content_files(&content_files);
     let partials = find_partials();
 
