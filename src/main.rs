@@ -355,7 +355,7 @@ fn is_slug_helper(
         let slug = data.slug;
         let regex = Regex::new(&path);
 
-        if regex.is_err() || slug.is_none() {
+        if (regex.is_err() || slug.is_none()) && h.inverse().is_some() {
             h.inverse().unwrap();
         }
         
