@@ -847,6 +847,16 @@ fn copy_assets() {
     for asset in assets {
         let relative_path = asset.replace(&config.dir, "");
         println!("Copying {}", relative_path);
+
+        let full_new_path_str = format!("{}{}{}", &config.dir, "/public", relative_path);
+        let path = Path::new(&full_new_path_str);
+        let prefix = path.parent().unwrap();
+        let create_dir = fs::create_dir_all(prefix);
+
+        if create_dir.is_err() {
+            println!("{:?}", create_dir.err());
+        }
+
         let action = fs::copy(
             asset,
             format!("{}{}{}", config.dir, "/public", relative_path),
