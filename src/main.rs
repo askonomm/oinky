@@ -109,6 +109,7 @@ fn get_config() -> Config {
 /// files that match a `file_type`. Returns a vector of strings where each
 /// string is an absolute path to the file.
 fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
+    let config = get_config();
     let mut files: Vec<String> = Vec::new();
     let read_dir = fs::read_dir(dir);
 
@@ -119,6 +120,7 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
     for entry in read_dir.unwrap() {
         let path = entry.unwrap().path();
         let path_str = path.as_path().display().to_string();
+        let relative_path_str = path_str.replace(&config.dir, "");
 
         if path.is_dir() {
             files.extend(find_files(&path, file_type));
@@ -160,9 +162,9 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
                     && !path_str.ends_with("content.json")
                     && !path_str.contains("_layouts")
                     && !path_str.contains("_partials")
-                    && !path_str.contains(".git")
                     && !path_str.contains("node_modules")
                     && !path_str.contains("public")
+                    && !relative_path_str.starts_with("/.")
                     && !path.is_dir()
                 {
                     files.push(path_str);
