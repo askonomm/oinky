@@ -14,9 +14,14 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
+use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use throttle_my_fn::throttle;
+use parking_lot;
 
+#[derive(Clone, Eq, PartialEq, Hash)]
 enum FileType {
     Handlebars,
     HandlebarsPages,
@@ -105,11 +110,55 @@ fn get_config() -> Config {
     return Config { dir, utc_offset };
 }
 
+fn match_handlebars_file(path: &str) -> bool {
+    return path.ends_with(".hbs") || path.ends_with(".handlebars");
+}
+
+fn match_handlebars_page_file(path: &str) -> bool {
+    return !path.contains("_layouts") 
+        && !path.contains("_partials")
+        && !path.contains("public")
+        && !path.contains("node_modules")
+        && (path.ends_with(".hbs") 
+            || path.ends_with(".handlebars"));
+}
+
+fn match_markdown_file(path: &str) -> bool {
+    return !path.contains("_layouts") 
+        && !path.contains("_partials")
+        && !path.contains("public")
+        && !path.contains("node_modules")
+        && (path.ends_with(".md") 
+            || path.ends_with(".markdown"));
+}
+
+fn match_data_file(path: &str) -> bool {
+    let relative_path = path.replace(&get_config().dir, "");
+
+    return relative_path == "/site.json" || relative_path == "/content.json";
+}
+
+fn match_asset_file(path: &str) -> bool {
+    let relative_path = path.replace(&get_config().dir, "");
+
+    return !path.ends_with(".hbs")
+        && !path.ends_with(".handlebars")
+        && !path.ends_with(".md")
+        && !path.ends_with(".markdown")
+        && !path.ends_with("site.json")
+        && !path.ends_with("content.json")
+        && !path.contains("_layouts")
+        && !path.contains("_partials")
+        && !path.contains("node_modules")
+        && !path.contains("public")
+        && !relative_path.starts_with("/.");
+}
+
 /// Recursively browses directories within the given `dir` for any and all
 /// files that match a `file_type`. Returns a vector of strings where each
 /// string is an absolute path to the file.
-fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
-    let config = get_config();
+#[cached]
+fn find_files(dir: String, file_type: FileType) -> Vec<String> {
     let mut files: Vec<String> = Vec::new();
     let read_dir = fs::read_dir(dir);
 
@@ -120,54 +169,30 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
     for entry in read_dir.unwrap() {
         let path = entry.unwrap().path();
         let path_str = path.as_path().display().to_string();
-        let relative_path_str = path_str.replace(&config.dir, "");
 
         if path.is_dir() {
-            files.extend(find_files(&path, file_type));
-        }
-
-        match file_type {
-            FileType::Handlebars => {
-                if path_str.ends_with(".hbs") || path_str.ends_with(".handlebars") {
-                    files.push(path_str);
+            files.extend(find_files(path_str.clone(), file_type.clone()));
+        } else {
+            match file_type {
+                FileType::Handlebars => {
+                    if match_handlebars_file(&path_str) {
+                        files.push(path_str);
+                    }
                 }
-            }
-            FileType::HandlebarsPages => {
-                if (!path_str.contains("_layouts") 
-                    && !path_str.contains("_partials")
-                    && !path_str.contains("public"))
-                    && !path_str.contains("node_modules")
-                    && (path_str.ends_with(".hbs") 
-                    || path_str.ends_with(".handlebars"))
-                {
-                    files.push(path_str);
+                FileType::HandlebarsPages => {
+                    if match_handlebars_page_file(&path_str) {
+                        files.push(path_str);
+                    }
                 }
-            }
-            FileType::Markdown => {
-                if !path_str.contains("_layouts") 
-                    && !path_str.contains("_partials")
-                    && !path_str.contains("public")
-                    && !path_str.contains("node_modules")
-                    && (path_str.ends_with(".md") 
-                    || path_str.ends_with(".markdown")) {
-                    files.push(path_str);
+                FileType::Markdown => {
+                    if match_markdown_file(&path_str) {
+                        files.push(path_str);
+                    }
                 }
-            }
-            FileType::Asset => {
-                if !path_str.ends_with(".hbs")
-                    && !path_str.ends_with(".handlebars")
-                    && !path_str.ends_with(".md")
-                    && !path_str.ends_with(".markdown")
-                    && !path_str.ends_with("site.json")
-                    && !path_str.ends_with("content.json")
-                    && !path_str.contains("_layouts")
-                    && !path_str.contains("_partials")
-                    && !path_str.contains("node_modules")
-                    && !path_str.contains("public")
-                    && !relative_path_str.starts_with("/.")
-                    && !path.is_dir()
-                {
-                    files.push(path_str);
+                FileType::Asset => {
+                    if match_asset_file(&path_str) {
+                        files.push(path_str);
+                    }
                 }
             }
         }
@@ -179,11 +204,11 @@ fn find_files(dir: &Path, file_type: &FileType) -> Vec<String> {
 /// Finds all partials from within the /_partials directory that
 /// it turns into a vector of consumable `TemplatePartial`'s. Consumed by
 /// Handlebars in `built_html`.
-#[cached(time = 2)]
+#[cached]
 fn find_partials() -> Vec<TemplatePartial> {
     let paths = find_files(
-        Path::new(&format!("{}{}", get_config().dir, "/_partials")),
-        &FileType::Handlebars,
+        format!("{}{}", get_config().dir, "/_partials"),
+        FileType::Handlebars,
     );
     let mut partials: Vec<TemplatePartial> = Vec::new();
 
@@ -208,7 +233,8 @@ fn find_partials() -> Vec<TemplatePartial> {
 
 /// Parses a given content item's `contents` for YAML-like meta-data which it
 /// then returns as a key-value HashMap.
-fn parse_content_file_meta(contents: &str) -> HashMap<String, String> {
+#[cached]
+fn parse_content_file_meta(contents: String) -> HashMap<String, String> {
     let regex = Regex::new(r"(?s)^(---)(.*?)(---|\.\.\.)").unwrap();
 
     if regex.find(&contents).is_none() {
@@ -234,7 +260,8 @@ fn parse_content_file_meta(contents: &str) -> HashMap<String, String> {
 
 /// Parses a given content item's `contents` for the Markdown entry which it
 /// then returns as a consumable HTML string.
-fn parse_content_file_entry(contents: &str) -> String {
+#[cached]
+fn parse_content_file_entry(contents: String) -> String {
     let regex = Regex::new(r"(?s)^---(.*?)---*").unwrap();
     let entry = regex.replace(&contents, "");
 
@@ -243,17 +270,17 @@ fn parse_content_file_entry(contents: &str) -> String {
 
 /// Parses given Markdown `files` for contents that contain YAML-like meta-data
 /// and the Markdown entry. Returns a vector of `ContentItem`.
-fn parse_content_files(files: &Vec<String>) -> Vec<ContentItem> {
+#[cached]
+fn parse_content_files(files: Vec<String>) -> Vec<ContentItem> {
     let mut content_items: Vec<ContentItem> = Vec::new();
 
     for file in files {
-        let file_contents = fs::read_to_string(file);
+        let path = file;
+        let file_contents = fs::read_to_string(path.clone());
         let contents = file_contents.unwrap_or(String::new());
-        let meta = parse_content_file_meta(&contents);
-        let entry = parse_content_file_entry(&contents);
-        let path = file.to_string();
-        let slug = file
-            .to_string()
+        let meta = parse_content_file_meta(contents.clone());
+        let entry = parse_content_file_entry(contents.clone());
+        let slug = path
             .replace(&get_config().dir, "")
             .replace(".md", "");
         let time_to_read = entry.split_whitespace().count() / 225;
@@ -491,71 +518,96 @@ fn write_to_path(path: &str, contents: String) {
 
 /// Compiles all content items within the root directory with given
 /// global Handlebars `data`, resulting in HTML files written to disk.
-fn compile_content_items(data: &TemplateData) {
-    let config = get_config();
-    let read_path = Path::new(&config.dir);
-    let content_files = find_files(read_path, &FileType::Markdown);
-    let content_items = parse_content_files(&content_files);
-    let partials = find_partials();
+fn compile_content_items(data: TemplateData) {
+    let content_files = find_files(get_config().dir, FileType::Markdown);
+    let content_items = parse_content_files(content_files);
+    let chunks = content_items.chunks(500).map(|c| c.to_owned());
+    static THREADS: AtomicUsize = AtomicUsize::new(0);
 
-    for content_item in content_items {
-        let item = content_item.clone();
-        let item_data = TemplateData {
-            path: Some(content_item.path),
-            slug: Some(content_item.slug),
-            meta: Some(content_item.meta),
-            entry: Some(content_item.entry),
-            time_to_read: Some(content_item.time_to_read),
-            ..data.clone()
-        };
+    for chunk in chunks {
+        let x_data = data.clone();
+        THREADS.fetch_add(1, Ordering::SeqCst);
 
-        if item.meta.get("layout").is_none() {
-            return;
-        }
+        thread::spawn(move || {
+            let x: Vec<ContentItem> = chunk;
+            for content_item in x {
+                let item = content_item.clone();
+                let item_data = TemplateData {
+                    path: Some(content_item.path),
+                    slug: Some(content_item.slug),
+                    meta: Some(content_item.meta),
+                    entry: Some(content_item.entry),
+                    time_to_read: Some(content_item.time_to_read),
+                    ..x_data.clone()
+                };
+        
+                if item.meta.get("layout").is_none() {
+                    return;
+                }
+        
+                print!("Building {}\n", item.slug);
+        
+                let layout = item.meta.get("layout").unwrap().to_string();
+                let template_path = format!("{}{}{}{}", get_config().dir, "/_layouts/", layout, ".hbs");
+                let html = build_html(template_path, find_partials(), item_data);
+                let write_path = format!(
+                    "{}{}{}{}",
+                    get_config().dir,
+                    "/public",
+                    item.slug,
+                    "/index.html"
+                );
+        
+                write_to_path(&write_path, html);
+            }
 
-        println!("Building {}", item.slug);
+            THREADS.fetch_sub(1, Ordering::SeqCst);
+        });
+    }
 
-        let layout = item.meta.get("layout").unwrap().to_string();
-        let template_path = format!("{}{}{}{}", get_config().dir, "/_layouts/", layout, ".hbs");
-        let html = build_html(template_path, partials.clone(), item_data);
-        let write_path = format!(
-            "{}{}{}{}",
-            get_config().dir,
-            "/public",
-            item.slug,
-            "/index.html"
-        );
-
-        write_to_path(&write_path, html);
+    while THREADS.load(Ordering::SeqCst) != 0 {
+        thread::sleep(Duration::from_millis(1));
     }
 }
 
 /// Compiles all non-layout and non-partial template items within the
 /// root directory with given Handlebars `data`, resulting in HTML files
 /// written to disk.
-fn compile_template_items(data: &TemplateData) {
-    let config = get_config();
-    let read_path = Path::new(&config.dir);
-    let partials = find_partials();
-    let template_files = find_files(read_path, &FileType::HandlebarsPages);
+fn compile_template_items(data: TemplateData) {
+    let template_files = find_files(get_config().dir, FileType::HandlebarsPages);
+    let chunks = template_files.chunks(500).map(|c| c.to_owned());
+    static THREADS: AtomicUsize = AtomicUsize::new(0);
 
-    for file in template_files {
-        let slug = file
-            .to_string()
-            .replace(&config.dir, "")
-            .replace(".hbs", "");
+    for chunk in chunks {
+        let x_data = data.clone();
+        THREADS.fetch_add(1, Ordering::SeqCst);
 
-        println!("Building {}", slug);
+        thread::spawn(move || {
+            for file in chunk {
+                let slug = file
+                    .to_string()
+                    .replace(&get_config().dir, "")
+                    .replace(".hbs", "");
+        
+                print!("Building {}\n", slug);
+        
+                let template_data = TemplateData {
+                    slug: Some(slug.clone()),
+                    ..x_data.clone()
+                };
+        
+                let html = build_html(file, find_partials(), template_data);
+                let write_path = format!("{}{}{}", get_config().dir, "/public", slug);
+        
+                write_to_path(&write_path, html);
+            }
 
-        let template_data = TemplateData {
-            slug: Some(slug.clone()),
-            ..data.clone()
-        };
+            THREADS.fetch_sub(1, Ordering::SeqCst);
+        });
+    }
 
-        let html = build_html(file, partials.clone(), template_data);
-        let write_path = format!("{}{}{}", get_config().dir, "/public", slug);
-
-        write_to_path(&write_path, html);
+    while THREADS.load(Ordering::SeqCst) != 0 {
+        thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -776,6 +828,7 @@ fn dsl_group(
 /// Composes content data from the `content.json` DSL which allows users to
 /// create data-sets from the available content files, further enabling more
 /// dynamic-ish site creation.
+#[cached]
 fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
     let config = get_config();
     let file_contents = fs::read_to_string(format!("{}{}", config.dir, "/content.json"));
@@ -791,8 +844,8 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
     for dsl_item in dsl.unwrap_or(Vec::new()) {
         let item = dsl_item.clone();
         let path_str = format!("{}{}{}", config.dir, "/", dsl_item.from);
-        let content_files = find_files(Path::new(&path_str), &FileType::Markdown);
-        let mut parsed_content_files = parse_content_files(&content_files);
+        let content_files = find_files(path_str, FileType::Markdown);
+        let mut parsed_content_files = parse_content_files(content_files);
 
         if dsl_item.group_by.is_some() {
             content.insert(
@@ -819,6 +872,7 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
 }
 
 /// Composes global template data for consumption by Handlebars templates.
+#[cached]
 fn compose_global_template_data() -> TemplateData {
     return TemplateData {
         site: get_site_info(),
@@ -832,7 +886,7 @@ fn compose_global_template_data() -> TemplateData {
 }
 
 /// Return `SiteInfo` from the `site.json` file.
-#[cached(time = 2)]
+#[cached]
 fn get_site_info() -> serde_json::Value {
     let config = get_config();
     let file_contents = fs::read_to_string(format!("{}{}", config.dir, "/site.json"));
@@ -841,16 +895,29 @@ fn get_site_info() -> serde_json::Value {
     return serde_json::from_str(&contents).unwrap_or(serde_json::from_str("{}").unwrap());
 }
 
-/// Copies all files with `FileType::Asset` into the /public directory.
-fn copy_assets() {
-    let config = get_config();
-    let assets = find_files(Path::new(&config.dir), &FileType::Asset);
+fn delete_assets() {
+    let assets = find_files(get_config().dir, FileType::Asset);
 
     for asset in assets {
-        let relative_path = asset.replace(&config.dir, "");
+        let relative_path = asset.replace(&get_config().dir, "");
+        let public_dir_path = format!("{}{}{}", &get_config().dir, "/public", relative_path);
+        let delete = fs::remove_file(public_dir_path);
+
+        if delete.is_err() {
+            println!("{:?}", delete.err());
+        }
+    }
+}
+
+/// Copies all files with `FileType::Asset` into the /public directory.
+fn copy_assets() {
+    let assets = find_files(get_config().dir, FileType::Asset);
+
+    for asset in assets {
+        let relative_path = asset.replace(&get_config().dir, "");
         println!("Copying {}", relative_path);
 
-        let full_new_path_str = format!("{}{}{}", &config.dir, "/public", relative_path);
+        let full_new_path_str = format!("{}{}{}", &get_config().dir, "/public", relative_path);
         let path = Path::new(&full_new_path_str);
         let prefix = path.parent().unwrap();
         let create_dir = fs::create_dir_all(prefix);
@@ -861,7 +928,7 @@ fn copy_assets() {
 
         let action = fs::copy(
             asset,
-            format!("{}{}{}", config.dir, "/public", relative_path),
+            format!("{}{}{}", get_config().dir, "/public", relative_path),
         );
 
         if action.is_err() {
@@ -873,6 +940,8 @@ fn copy_assets() {
 /// Runs Oinky on the current directory and compiles an entire static site
 /// out of given information.
 fn compile() {
+    print!("Thinking ...\n");
+
     // Prepare dotenv
     dotenv().ok();
 
@@ -883,10 +952,10 @@ fn compile() {
     let global_data = compose_global_template_data();
 
     // Compile individual content items
-    compile_content_items(&global_data);
+    compile_content_items(global_data.clone());
 
     // Compile individual non-layout and non-partial Handlebars templates.
-    compile_template_items(&global_data);
+    compile_template_items(global_data.clone());
 
     // Move assets to /public dir
     copy_assets();
@@ -895,12 +964,34 @@ fn compile() {
 /// Potentially runs Oinky when a given `path` is determined to be something
 /// that changes that would require the site generator to run again. Used by
 /// the watcher.
-fn potentially_compile(path: String) {
-    let config = get_config();
-    let relative_path = path.replace(&config.dir, "");
+#[throttle(1, Duration::from_secs(1))]
+fn potentially_compile(path: PathBuf) {
+    let path_str = path.as_path().display().to_string();
 
-    if !relative_path.starts_with("/.git/") && !relative_path.starts_with("/public/") {
-        compile();
+    // If data file changed, re-compile everything
+    if match_data_file(&path_str) {
+        compile()
+    }
+
+    // If assets changed, we need to delete all assets, and copy anew
+    if match_asset_file(&path_str) {
+        delete_assets();
+        copy_assets();
+    }
+
+    // If content items changed, re-compile
+    if match_markdown_file(&path_str) {
+        let global_data = compose_global_template_data();
+
+        compile_content_items(global_data);
+    }
+
+
+    // If template items changed, re-compile
+    if match_handlebars_page_file(&path_str) {
+        let global_data = compose_global_template_data();
+
+        compile_template_items(global_data);
     }
 }
 
@@ -912,13 +1003,12 @@ fn watch() {
     let mut h = Hotwatch::new().expect("Watcher failed to initialize.");
 
     h.watch(config.dir, |event: Event| match event {
-        Event::Write(path) => potentially_compile(path.to_str().unwrap().to_string()),
-        Event::Create(path) => potentially_compile(path.to_str().unwrap().to_string()),
-        Event::Rename(_, path) => potentially_compile(path.to_str().unwrap().to_string()),
-        Event::Remove(path) => potentially_compile(path.to_str().unwrap().to_string()),
+        Event::Write(path) => potentially_compile(path).unwrap_or(()),
+        Event::Create(path) => potentially_compile(path).unwrap_or(()),
+        Event::Rename(_, path) => potentially_compile(path).unwrap_or(()),
+        Event::Remove(path) => potentially_compile(path).unwrap_or(()),
         _ => (),
-    })
-    .expect("Failed to watch directory.");
+    }).expect("Failed to watch directory.");
 
     thread::park();
 }

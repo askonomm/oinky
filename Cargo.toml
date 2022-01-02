@@ -22,3 +22,5 @@ chrono = "0.4.19"
 dotenv = "0.15.0"
 indexmap = { version = "1.7.0", features = ["serde"] }
 hotwatch = "0.4.6"
+throttle_my_fn = "0.2"
+parking_lot = "0.11"
