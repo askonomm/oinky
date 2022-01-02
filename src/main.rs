@@ -82,7 +82,7 @@ struct Config {
 
 /// Prints an error `message` to stdout and subsequently exits the program.
 fn err_out(message: String) {
-    print!("{}", message);
+    println!("{}", message);
     std::process::exit(1);
 }
 
@@ -533,6 +533,11 @@ fn compile_content_items(data: TemplateData) {
             let x: Vec<ContentItem> = chunk;
             for content_item in x {
                 let item = content_item.clone();
+
+                if item.meta.get("layout").is_none() {
+                    continue;
+                }
+                
                 let item_data = TemplateData {
                     path: Some(content_item.path),
                     slug: Some(content_item.slug),
@@ -542,11 +547,7 @@ fn compile_content_items(data: TemplateData) {
                     ..x_data.clone()
                 };
 
-                if item.meta.get("layout").is_none() {
-                    return;
-                }
-
-                print!("Building {}\n", item.slug);
+                println!("Building {}", item.slug);
 
                 let layout = item.meta.get("layout").unwrap().to_string();
                 let template_path =
@@ -591,7 +592,7 @@ fn compile_template_items(data: TemplateData) {
                     .replace(&get_config().dir, "")
                     .replace(".hbs", "");
 
-                print!("Building {}\n", slug);
+                println!("Building {}", slug);
 
                 let template_data = TemplateData {
                     slug: Some(slug.clone()),
@@ -943,7 +944,7 @@ fn copy_assets() {
 /// Runs Oinky on the current directory and compiles an entire static site
 /// out of given information.
 fn compile() {
-    print!("Thinking ...\n");
+    println!("Thinking ...");
 
     // Prepare dotenv
     dotenv().ok();
@@ -1000,7 +1001,6 @@ fn potentially_compile(path: PathBuf) {
 /// Watches for file changes and potentally runs Oinky if an interesting enough
 /// file has been created, changed, renamed or deleted.
 fn watch() {
-    print!("Watching ...\n");
     let mut h = Hotwatch::new().expect("Watcher failed to initialize.");
 
     h.watch(get_config().dir, |event: Event| match event {
