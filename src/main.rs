@@ -5,6 +5,7 @@ use dotenv::dotenv;
 use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext, Renderable};
 use hotwatch::{Event, Hotwatch};
 use indexmap::IndexMap;
+use parking_lot;
 use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -15,11 +16,10 @@ use std::env;
 use std::fs;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use throttle_my_fn::throttle;
-use parking_lot;
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 enum FileType {
@@ -115,21 +115,19 @@ fn match_handlebars_file(path: &str) -> bool {
 }
 
 fn match_handlebars_page_file(path: &str) -> bool {
-    return !path.contains("_layouts") 
+    return !path.contains("_layouts")
         && !path.contains("_partials")
         && !path.contains("public")
         && !path.contains("node_modules")
-        && (path.ends_with(".hbs") 
-            || path.ends_with(".handlebars"));
+        && (path.ends_with(".hbs") || path.ends_with(".handlebars"));
 }
 
 fn match_markdown_file(path: &str) -> bool {
-    return !path.contains("_layouts") 
+    return !path.contains("_layouts")
         && !path.contains("_partials")
         && !path.contains("public")
         && !path.contains("node_modules")
-        && (path.ends_with(".md") 
-            || path.ends_with(".markdown"));
+        && (path.ends_with(".md") || path.ends_with(".markdown"));
 }
 
 fn match_data_file(path: &str) -> bool {
@@ -280,9 +278,7 @@ fn parse_content_files(files: Vec<String>) -> Vec<ContentItem> {
         let contents = file_contents.unwrap_or(String::new());
         let meta = parse_content_file_meta(contents.clone());
         let entry = parse_content_file_entry(contents.clone());
-        let slug = path
-            .replace(&get_config().dir, "")
-            .replace(".md", "");
+        let slug = path.replace(&get_config().dir, "").replace(".md", "");
         let time_to_read = entry.split_whitespace().count() / 225;
         let content_item = ContentItem {
             path,
@@ -385,7 +381,7 @@ fn is_slug_helper(
         if (regex.is_err() || slug.is_none()) && h.inverse().is_some() {
             h.inverse().unwrap();
         }
-        
+
         if regex.unwrap().is_match(&slug.unwrap()) && h.template().is_some() {
             h.template().unwrap().render(&r, &c, &mut x, out).unwrap();
         }
@@ -540,15 +536,16 @@ fn compile_content_items(data: TemplateData) {
                     time_to_read: Some(content_item.time_to_read),
                     ..x_data.clone()
                 };
-        
+
                 if item.meta.get("layout").is_none() {
                     return;
                 }
-        
+
                 print!("Building {}\n", item.slug);
-        
+
                 let layout = item.meta.get("layout").unwrap().to_string();
-                let template_path = format!("{}{}{}{}", get_config().dir, "/_layouts/", layout, ".hbs");
+                let template_path =
+                    format!("{}{}{}{}", get_config().dir, "/_layouts/", layout, ".hbs");
                 let html = build_html(template_path, find_partials(), item_data);
                 let write_path = format!(
                     "{}{}{}{}",
@@ -557,7 +554,7 @@ fn compile_content_items(data: TemplateData) {
                     item.slug,
                     "/index.html"
                 );
-        
+
                 write_to_path(&write_path, html);
             }
 
@@ -588,17 +585,17 @@ fn compile_template_items(data: TemplateData) {
                     .to_string()
                     .replace(&get_config().dir, "")
                     .replace(".hbs", "");
-        
+
                 print!("Building {}\n", slug);
-        
+
                 let template_data = TemplateData {
                     slug: Some(slug.clone()),
                     ..x_data.clone()
                 };
-        
+
                 let html = build_html(file, find_partials(), template_data);
                 let write_path = format!("{}{}{}", get_config().dir, "/public", slug);
-        
+
                 write_to_path(&write_path, html);
             }
 
@@ -1006,7 +1003,8 @@ fn watch() {
         Event::Rename(_, path) => potentially_compile(path).unwrap_or(()),
         Event::Remove(path) => potentially_compile(path).unwrap_or(()),
         _ => (),
-    }).expect("Failed to watch directory.");
+    })
+    .expect("Failed to watch directory.");
 
     thread::park();
 }
