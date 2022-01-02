@@ -110,10 +110,12 @@ fn get_config() -> Config {
     return Config { dir, utc_offset };
 }
 
+/// Determines if the given `path` matches a Handlebars file.
 fn match_handlebars_file(path: &str) -> bool {
     return path.ends_with(".hbs") || path.ends_with(".handlebars");
 }
 
+/// Determines if the given `path` matches a Handlebars Page file.
 fn match_handlebars_page_file(path: &str) -> bool {
     return !path.contains("_layouts")
         && !path.contains("_partials")
@@ -122,6 +124,7 @@ fn match_handlebars_page_file(path: &str) -> bool {
         && (path.ends_with(".hbs") || path.ends_with(".handlebars"));
 }
 
+/// Determines if the given `path` matches a Markdown file.
 fn match_markdown_file(path: &str) -> bool {
     return !path.contains("_layouts")
         && !path.contains("_partials")
@@ -130,12 +133,14 @@ fn match_markdown_file(path: &str) -> bool {
         && (path.ends_with(".md") || path.ends_with(".markdown"));
 }
 
+/// Determines if the given `path` matches a data file.
 fn match_data_file(path: &str) -> bool {
     let relative_path = path.replace(&get_config().dir, "");
 
     return relative_path == "/site.json" || relative_path == "/content.json";
 }
 
+/// Determines if the given `path` matches a asset file.
 fn match_asset_file(path: &str) -> bool {
     let relative_path = path.replace(&get_config().dir, "");
 
@@ -892,6 +897,7 @@ fn get_site_info() -> serde_json::Value {
     return serde_json::from_str(&contents).unwrap_or(serde_json::from_str("{}").unwrap());
 }
 
+/// Deletes all `FileType::Asset` files from the `/public` directory.
 fn delete_assets() {
     let assets = find_files(get_config().dir, FileType::Asset);
 
@@ -906,7 +912,7 @@ fn delete_assets() {
     }
 }
 
-/// Copies all files with `FileType::Asset` into the /public directory.
+/// Copies all `FileType::Asset` files into the /public directory.
 fn copy_assets() {
     let assets = find_files(get_config().dir, FileType::Asset);
 
