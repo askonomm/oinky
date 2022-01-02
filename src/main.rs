@@ -968,8 +968,8 @@ fn compile() {
 fn potentially_compile(path: PathBuf) {
     let path_str = path.as_path().display().to_string();
 
-    // If data file changed, re-compile everything
-    if match_data_file(&path_str) {
+    // If data file or partials/layouts changed, re-compile everything
+    if match_data_file(&path_str) || match_handlebars_file(&path_str) {
         compile()
     }
 
@@ -979,15 +979,14 @@ fn potentially_compile(path: PathBuf) {
         copy_assets();
     }
 
-    // If content items changed, re-compile
+    // If content items changed, re-compile only those
     if match_markdown_file(&path_str) {
         let global_data = compose_global_template_data();
 
         compile_content_items(global_data);
     }
 
-
-    // If template items changed, re-compile
+    // If template items changed, re-compile only those
     if match_handlebars_page_file(&path_str) {
         let global_data = compose_global_template_data();
 
@@ -998,11 +997,10 @@ fn potentially_compile(path: PathBuf) {
 /// Watches for file changes and potentally runs Oinky if an interesting enough
 /// file has been created, changed, renamed or deleted.
 fn watch() {
-    println!("Watching ...");
-    let config = get_config();
+    print!("Watching ...\n");
     let mut h = Hotwatch::new().expect("Watcher failed to initialize.");
 
-    h.watch(config.dir, |event: Event| match event {
+    h.watch(get_config().dir, |event: Event| match event {
         Event::Write(path) => potentially_compile(path).unwrap_or(()),
         Event::Create(path) => potentially_compile(path).unwrap_or(()),
         Event::Rename(_, path) => potentially_compile(path).unwrap_or(()),
