@@ -1,18 +1,19 @@
+mod dsl;
+mod helpers;
+mod utils;
+
 use cached::proc_macro::cached;
-use chrono::prelude::*;
 use comrak::{markdown_to_html, ComrakOptions};
 use dotenv::dotenv;
-use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext, Renderable};
+use dsl::{ContentDSLItem, TemplateContentDSLItem};
+use handlebars::Handlebars;
 use hotwatch::{Event, Hotwatch};
-use indexmap::IndexMap;
 use isahc::prelude::*;
 use parking_lot;
 use rayon::prelude::*;
 use regex::Regex;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use serde_value::Value;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -38,14 +39,6 @@ struct TemplatePartial {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-enum TemplateContentDSLItem {
-    Normal(Vec<ContentItem>),
-    Grouped(IndexMap<String, Vec<ContentItem>>),
-    Pulled(serde_json::Value),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TemplateData {
     site: serde_json::Value,
     content: HashMap<String, TemplateContentDSLItem>,
@@ -57,25 +50,12 @@ struct TemplateData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ContentItem {
+pub struct ContentItem {
     path: String,
     slug: String,
     meta: HashMap<String, String>,
     entry: String,
     time_to_read: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ContentDSLItem {
-    name: String,
-    from: String,
-    sort_by: Option<String>,
-    group_by: Option<String>,
-    group_by_order: Option<String>,
-    group_by_limit: Option<usize>,
-    order: Option<String>,
-    limit: Option<usize>,
-    headers: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,23 +75,15 @@ fn err_out(message: String) {
 /// use those instead.
 #[cached]
 fn get_config() -> Config {
-    let dir;
-    let env_dir = env::var("READ_DIR");
-
-    if env_dir.is_ok() {
-        dir = env_dir.unwrap().to_string();
-    } else {
-        dir = env::current_dir().unwrap().to_str().unwrap().to_string();
-    }
-
-    let mut utc_offset = 0;
-    let env_utc_offset = env::var("UTC_OFFSET");
-
-    if env_utc_offset.is_ok() {
-        utc_offset = env_utc_offset.unwrap().parse::<i32>().unwrap();
-    }
-
-    return Config { dir, utc_offset };
+    return Config {
+        dir: env::var("READ_DIR")
+            .unwrap_or(env::current_dir().unwrap().to_str().unwrap().to_string())
+            .to_string(),
+        utc_offset: env::var("UTC_OFFSET")
+            .unwrap_or(0.to_string())
+            .parse::<i32>()
+            .unwrap(),
+    };
 }
 
 /// Determines if the given `path` matches a Handlebars file.
@@ -121,19 +93,23 @@ fn is_handlebars_file(path: &str) -> bool {
 
 /// Determines if the given `path` matches a Handlebars Page file.
 fn is_handlebars_page_file(path: &str) -> bool {
-    return !path.contains("_layouts")
-        && !path.contains("_partials")
-        && !path.contains("public")
-        && !path.contains("node_modules")
+    let relative_path = path.replace(&get_config().dir, "");
+
+    return !relative_path.starts_with("/_layouts")
+        && !relative_path.starts_with("/_partials")
+        && !relative_path.starts_with("/public")
+        && !relative_path.starts_with("/node_modules")
         && (path.ends_with(".hbs") || path.ends_with(".handlebars"));
 }
 
 /// Determines if the given `path` matches a Markdown file.
 fn is_markdown_file(path: &str) -> bool {
-    return !path.contains("_layouts")
-        && !path.contains("_partials")
-        && !path.contains("public")
-        && !path.contains("node_modules")
+    let relative_path = path.replace(&get_config().dir, "");
+
+    return !relative_path.starts_with("/_layouts")
+        && !relative_path.starts_with("/_partials")
+        && !relative_path.starts_with("/public")
+        && !relative_path.starts_with("/node_modules")
         && (path.ends_with(".md") || path.ends_with(".markdown"));
 }
 
@@ -152,12 +128,12 @@ fn is_asset_file(path: &str) -> bool {
         && !path.ends_with(".handlebars")
         && !path.ends_with(".md")
         && !path.ends_with(".markdown")
-        && !path.ends_with("site.json")
-        && !path.ends_with("content.json")
-        && !path.contains("_layouts")
-        && !path.contains("_partials")
-        && !path.contains("node_modules")
-        && !path.contains("public")
+        && relative_path != "/site.json"
+        && relative_path != "/content.json"
+        && !relative_path.starts_with("/_layouts")
+        && !relative_path.starts_with("/_partials")
+        && !relative_path.starts_with("/public")
+        && !relative_path.starts_with("/node_modules")
         && !relative_path.starts_with("/.");
 }
 
@@ -299,137 +275,6 @@ fn parse_content_files(files: Vec<String>) -> Vec<ContentItem> {
         .collect();
 }
 
-/// Handlebars date helper.
-/// Usage:
-///
-/// ```handlebars
-/// {{date "%Y %d %m"}}
-/// ```
-fn date_helper(
-    h: &Helper,
-    _: &Handlebars,
-    _: &Context,
-    _rc: &mut RenderContext,
-    out: &mut dyn Output,
-) -> HelperResult {
-    if !h.param(0).unwrap().is_value_missing() {
-        let format: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
-        let config = get_config();
-        let hours = config.utc_offset;
-        let offset = FixedOffset::east_opt(hours * 60 * 60)
-            .expect("UTC offset out of bound, min -12, max 12");
-        let dt = Utc::now().with_timezone(&offset);
-        let result = dt.format(&format).to_string();
-
-        out.write(&result)?;
-    }
-
-    Ok(())
-}
-
-/// Handlebars date formatter helper.
-/// Usage:
-///
-/// ```handlebars
-/// {{format_date date-string "%Y %d %m"}}
-/// ```
-fn format_date_helper(
-    h: &Helper,
-    _: &Handlebars,
-    _: &Context,
-    _rc: &mut RenderContext,
-    out: &mut dyn Output,
-) -> HelperResult {
-    if !h.param(0).unwrap().is_value_missing() {
-        let date: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
-        let date_parts: Vec<&str> = date.split("-").collect();
-        let year = date_parts[0].parse::<i32>().unwrap();
-        let month = date_parts[1].parse::<u32>().unwrap();
-        let day = date_parts[2].parse::<u32>().unwrap();
-        let format: String = serde_json::from_value(h.param(1).unwrap().value().clone()).unwrap();
-        let config = get_config();
-        let hours = config.utc_offset;
-        let offset = FixedOffset::east_opt(hours * 60 * 60)
-            .expect("UTC offset out of bound, min -12, max 12");
-        let dt = Utc.ymd(year, month, day).with_timezone(&offset);
-        let result = dt.format(&format).to_string();
-
-        out.write(&result)?;
-    }
-
-    Ok(())
-}
-
-/// Handlebars slug checking helper.
-/// Usage:
-///
-/// ```handlebars
-/// {{#is_slug "/archive/index.html"}}
-/// // my code goes here
-/// {{/is_slug}}
-/// ```
-fn is_slug_helper(
-    h: &Helper,
-    r: &Handlebars,
-    c: &Context,
-    rc: &mut RenderContext,
-    out: &mut dyn Output,
-) -> HelperResult {
-    let mut x = rc.clone();
-
-    if !h.param(0).unwrap().is_value_missing() {
-        let path: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
-        let data: TemplateData = serde_json::from_value(c.data().clone()).unwrap();
-        let slug = data.slug;
-        let regex = Regex::new(&path);
-
-        if (regex.is_err() || slug.is_none()) && h.inverse().is_some() {
-            h.inverse().unwrap();
-        }
-
-        if slug.is_some() && regex.unwrap().is_match(&slug.unwrap()) && h.template().is_some() {
-            h.template().unwrap().render(&r, &c, &mut x, out).unwrap();
-        }
-    }
-
-    Ok(())
-}
-
-/// Handlebars slug checking helper.
-/// Usage:
-///
-/// ```handlebars
-/// {{#unless_slug "/archive/index.html"}}
-/// // my code goes here
-/// {{/unless_slug}}
-/// ```
-fn unless_slug_helper(
-    h: &Helper,
-    r: &Handlebars,
-    c: &Context,
-    rc: &mut RenderContext,
-    out: &mut dyn Output,
-) -> HelperResult {
-    let mut x = rc.clone();
-
-    if !h.param(0).unwrap().is_value_missing() {
-        let path: String = serde_json::from_value(h.param(0).unwrap().value().clone()).unwrap();
-        let data: TemplateData = serde_json::from_value(c.data().clone()).unwrap();
-        let slug = data.slug;
-        let regex = Regex::new(&path);
-
-        if regex.is_err() || slug.is_none() {
-            h.inverse().unwrap();
-        }
-
-        if slug.is_some() && !regex.unwrap().is_match(&slug.unwrap()) && h.template().is_some() {
-            h.template().unwrap().render(&r, &c, &mut x, out).unwrap();
-        }
-    }
-
-    Ok(())
-}
-
 /// Builds HTML from a Handlebars template in a path `template_path`, by fusing
 /// together `data` and registering any given `partials`. Returns a HTML string.
 fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: TemplateData) -> String {
@@ -460,10 +305,10 @@ fn build_html(template_path: String, partials: Vec<TemplatePartial>, data: Templ
     }
 
     // Register helpers
-    hbs.register_helper("date", Box::new(date_helper));
-    hbs.register_helper("format_date", Box::new(format_date_helper));
-    hbs.register_helper("is_slug", Box::new(is_slug_helper));
-    hbs.register_helper("unless_slug", Box::new(unless_slug_helper));
+    hbs.register_helper("date", Box::new(helpers::date_helper));
+    hbs.register_helper("format_date", Box::new(helpers::format_date_helper));
+    hbs.register_helper("is_slug", Box::new(helpers::is_slug_helper));
+    hbs.register_helper("unless_slug", Box::new(helpers::unless_slug_helper));
 
     // Render
     let render = hbs.render("_main", &data);
@@ -523,7 +368,7 @@ fn write_to_path(path: &str, contents: String) {
 fn compile_content_items(data: TemplateData) {
     let content_files = find_files(get_config().dir, FileType::Markdown);
     let content_items = parse_content_files(content_files);
-    let chunks = content_items.chunks(500).map(|c| c.to_owned());
+    let chunks = content_items.chunks(50).map(|c| c.to_owned());
     static THREADS: AtomicUsize = AtomicUsize::new(0);
 
     for chunk in chunks {
@@ -577,7 +422,7 @@ fn compile_content_items(data: TemplateData) {
 /// written to disk.
 fn compile_template_items(data: TemplateData) {
     let template_files = find_files(get_config().dir, FileType::HandlebarsPages);
-    let chunks = template_files.chunks(500).map(|c| c.to_owned());
+    let chunks = template_files.chunks(50).map(|c| c.to_owned());
     static THREADS: AtomicUsize = AtomicUsize::new(0);
 
     for chunk in chunks {
@@ -611,220 +456,6 @@ fn compile_template_items(data: TemplateData) {
     while THREADS.load(Ordering::SeqCst) != 0 {
         thread::sleep(Duration::from_millis(1));
     }
-}
-
-/// Returns a value of a given `s` by a given `field`. Enables the retrieval
-/// of Struct values by key using a string.
-fn get_field_by_name<T, R>(s: T, field: &str) -> R
-where
-    T: Serialize,
-    R: DeserializeOwned,
-{
-    let mut map = match serde_value::to_value(s) {
-        Ok(Value::Map(map)) => map,
-        _ => panic!("Not a struct."),
-    };
-
-    let key = Value::String(field.to_owned());
-    let value = match map.remove(&key) {
-        Some(value) => value,
-        None => panic!("{}", format!("no such field {:?}", key)),
-    };
-
-    match R::deserialize(value) {
-        Ok(r) => r,
-        Err(_) => panic!("Something went wrong ..."),
-    }
-}
-
-/// Sorts given `items` by given `by` in given `order`. Supports top-level struct
-/// keys as `by` as well as meta-level keys like `meta.date`.
-fn sort_content_items(items: &mut Vec<ContentItem>, by: String, order: String) {
-    items.sort_by(|a, b| {
-        if by.contains("meta.") {
-            let meta_key = by.replace("meta.", "");
-            let comp_a = a.meta.get(&meta_key);
-            let comp_b = b.meta.get(&meta_key);
-
-            return if order == "desc" {
-                comp_b.cmp(&comp_a)
-            } else {
-                comp_a.cmp(&comp_b)
-            };
-        } else {
-            let comp_a: String = get_field_by_name(a, &by);
-            let comp_b: String = get_field_by_name(b, &by);
-
-            return if order == "desc" {
-                comp_b.cmp(&comp_a)
-            } else {
-                comp_a.cmp(&comp_b)
-            };
-        }
-    });
-}
-
-/// Sort, order and limit given `items` according to given `dsl`.
-fn dsl_sort_order_limit(dsl: ContentDSLItem, items: &mut Vec<ContentItem>) -> Vec<ContentItem> {
-    // Sort and order?
-    if dsl.sort_by.is_some() {
-        sort_content_items(
-            items,
-            dsl.sort_by.unwrap_or(String::from("slug")),
-            dsl.order.unwrap_or(String::from("desc")),
-        );
-    }
-
-    // Limit?
-    if dsl.limit.is_some() {
-        items.truncate(dsl.limit.unwrap());
-    }
-
-    return items.to_vec();
-}
-
-/// Returns a grouper from a given `item` according to given `by`. The
-/// `by` can be any top-level struct key as well as meta-level key, such as
-/// `meta.date`. In the case of `meta.date`, it also supports an additional
-/// modifier such as `meta.date|year`, to group by year. `month` and `day`
-/// are also supported.
-fn dsl_group_by_grouper(item: &ContentItem, by: &String) -> String {
-    let grouper: String;
-
-    // Meta-key grouping.
-    if by.contains("meta.") {
-        let meta_key: String;
-
-        // Construct key
-        if by.contains("|") {
-            let whole_key = by.replace("meta.", "");
-            let meta_key_split: Vec<&str> = whole_key.split("|").collect();
-            meta_key = meta_key_split[0].to_string();
-        } else {
-            meta_key = by.replace("meta.", "");
-        }
-
-        // Construct modifier
-        let meta_modifier: String;
-
-        if by.contains("|") {
-            let whole_key = by.replace("meta.", "");
-            let meta_key_split: Vec<&str> = whole_key.split("|").collect();
-            meta_modifier = meta_key_split[1].to_string();
-        } else {
-            meta_modifier = String::new();
-        };
-
-        // Construct value
-        let value;
-
-        if item.meta.get(&meta_key).is_some() {
-            value = item.meta.get(&meta_key).unwrap().to_string();
-        } else {
-            value = String::new();
-        };
-
-        // If we're grouping by meta.date and have `year` as a modifier
-        if meta_key == "date" && meta_modifier == "year" {
-            let date_parts: Vec<&str> = value.split("-").collect();
-            grouper = date_parts[0].to_string();
-        // If we're grouping by meta.date and have `month` as a modifier
-        } else if meta_key == "date" && meta_modifier == "month" {
-            let date_parts: Vec<&str> = value.split("-").collect();
-            grouper = date_parts[1].to_string();
-        // If we're grouping by meta.date and have `day` as a modifier
-        } else if meta_key == "date" && meta_modifier == "day" {
-            let date_parts: Vec<&str> = value.split("-").collect();
-            grouper = date_parts[2].to_string();
-        // Otherwise, the value itself is the grouper
-        } else {
-            grouper = value;
-        }
-    // Group by top-level field key.
-    } else {
-        grouper = get_field_by_name(item, &by);
-    }
-
-    return grouper;
-}
-
-/// Order given `groups` in either a descending or ascending order. Given
-/// `order` must either be a `asc` or `desc` string.
-fn dsl_group_order_limit(
-    groups: IndexMap<String, Vec<ContentItem>>,
-    order: String,
-    limit: Option<usize>,
-) -> IndexMap<String, Vec<ContentItem>> {
-    let mut ordered_grouped_content: IndexMap<String, Vec<ContentItem>> = IndexMap::new();
-    let mut keys: Vec<String> = Vec::new();
-
-    for key in groups.keys() {
-        keys.push(key.to_string());
-    }
-
-    // Order
-    keys.sort();
-
-    if order == "desc" {
-        keys.reverse();
-    }
-
-    // Limit
-    if limit.is_some() {
-        keys.truncate(limit.unwrap());
-    }
-
-    // Construct IndexMap
-    for key in keys {
-        let scoped_key = key.clone();
-        ordered_grouped_content.insert(scoped_key, groups.get(&key).unwrap().to_vec());
-    }
-
-    return ordered_grouped_content;
-}
-
-/// Group given `items` by given `by` and, optionally, order the groups by
-/// given `order`.
-fn dsl_group(
-    items: Vec<ContentItem>,
-    by: String,
-    order: Option<String>,
-    limit: Option<usize>,
-) -> IndexMap<String, Vec<ContentItem>> {
-    // If by is not provided, return nothing. This is so that the
-    // `compose_content_from_dsl` function would know which enum
-    // to return, as in grouped or normal.
-    if by.is_empty() {
-        return IndexMap::new();
-    }
-
-    // Groups the items by a given grouper, which is a string
-    // indicating a top-level struct key, or a meta key via "meta.{key}".
-    let mut grouped_content: IndexMap<String, Vec<ContentItem>> = IndexMap::new();
-
-    for item in items {
-        let grouper = dsl_group_by_grouper(&item, &by);
-        let mut grouped_content_items: Vec<ContentItem> = grouped_content
-            .get(&grouper)
-            .unwrap_or(&Vec::new())
-            .to_vec();
-
-        grouped_content_items.push(item);
-
-        if grouped_content.get(&grouper).is_none() {
-            grouped_content.insert(grouper, grouped_content_items);
-        } else {
-            grouped_content.remove(&grouper);
-            grouped_content.insert(grouper, grouped_content_items);
-        }
-    }
-
-    // Order the groups by either descending (default) or ascending order.
-    if order.is_some() {
-        grouped_content = dsl_group_order_limit(grouped_content, order.unwrap(), limit);
-    }
-
-    return grouped_content;
 }
 
 /// Composes content data from the `content.json` DSL which allows users to
@@ -875,8 +506,8 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
         if dsl_item.group_by.is_some() {
             content.insert(
                 dsl_item.name,
-                TemplateContentDSLItem::Grouped(dsl_group(
-                    dsl_sort_order_limit(item, &mut parsed_content_files),
+                TemplateContentDSLItem::Grouped(dsl::dsl_group(
+                    dsl::dsl_sort_order_limit(item, &mut parsed_content_files),
                     dsl_item.group_by.unwrap(),
                     dsl_item.group_by_order,
                     dsl_item.group_by_limit,
@@ -885,7 +516,7 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
         } else {
             content.insert(
                 dsl_item.name,
-                TemplateContentDSLItem::Normal(dsl_sort_order_limit(
+                TemplateContentDSLItem::Normal(dsl::dsl_sort_order_limit(
                     item,
                     &mut parsed_content_files,
                 )),
