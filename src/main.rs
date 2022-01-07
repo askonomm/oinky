@@ -5,7 +5,9 @@ use dotenv::dotenv;
 use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext, Renderable};
 use hotwatch::{Event, Hotwatch};
 use indexmap::IndexMap;
+use isahc::prelude::*;
 use parking_lot;
+use rayon::prelude::*;
 use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -14,7 +16,7 @@ use serde_value::Value;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::prelude::*;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -40,6 +42,7 @@ struct TemplatePartial {
 enum TemplateContentDSLItem {
     Normal(Vec<ContentItem>),
     Grouped(IndexMap<String, Vec<ContentItem>>),
+    Pulled(serde_json::Value),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +75,7 @@ struct ContentDSLItem {
     group_by_limit: Option<usize>,
     order: Option<String>,
     limit: Option<usize>,
+    headers: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,12 +115,12 @@ fn get_config() -> Config {
 }
 
 /// Determines if the given `path` matches a Handlebars file.
-fn match_handlebars_file(path: &str) -> bool {
+fn is_handlebars_file(path: &str) -> bool {
     return path.ends_with(".hbs") || path.ends_with(".handlebars");
 }
 
 /// Determines if the given `path` matches a Handlebars Page file.
-fn match_handlebars_page_file(path: &str) -> bool {
+fn is_handlebars_page_file(path: &str) -> bool {
     return !path.contains("_layouts")
         && !path.contains("_partials")
         && !path.contains("public")
@@ -125,7 +129,7 @@ fn match_handlebars_page_file(path: &str) -> bool {
 }
 
 /// Determines if the given `path` matches a Markdown file.
-fn match_markdown_file(path: &str) -> bool {
+fn is_markdown_file(path: &str) -> bool {
     return !path.contains("_layouts")
         && !path.contains("_partials")
         && !path.contains("public")
@@ -134,14 +138,14 @@ fn match_markdown_file(path: &str) -> bool {
 }
 
 /// Determines if the given `path` matches a data file.
-fn match_data_file(path: &str) -> bool {
+fn is_data_file(path: &str) -> bool {
     let relative_path = path.replace(&get_config().dir, "");
 
     return relative_path == "/site.json" || relative_path == "/content.json";
 }
 
 /// Determines if the given `path` matches a asset file.
-fn match_asset_file(path: &str) -> bool {
+fn is_asset_file(path: &str) -> bool {
     let relative_path = path.replace(&get_config().dir, "");
 
     return !path.ends_with(".hbs")
@@ -178,22 +182,22 @@ fn find_files(dir: String, file_type: FileType) -> Vec<String> {
         } else {
             match file_type {
                 FileType::Handlebars => {
-                    if match_handlebars_file(&path_str) {
+                    if is_handlebars_file(&path_str) {
                         files.push(path_str);
                     }
                 }
                 FileType::HandlebarsPages => {
-                    if match_handlebars_page_file(&path_str) {
+                    if is_handlebars_page_file(&path_str) {
                         files.push(path_str);
                     }
                 }
                 FileType::Markdown => {
-                    if match_markdown_file(&path_str) {
+                    if is_markdown_file(&path_str) {
                         files.push(path_str);
                     }
                 }
                 FileType::Asset => {
-                    if match_asset_file(&path_str) {
+                    if is_asset_file(&path_str) {
                         files.push(path_str);
                     }
                 }
@@ -206,16 +210,15 @@ fn find_files(dir: String, file_type: FileType) -> Vec<String> {
 
 /// Finds all partials from within the /_partials directory that
 /// it turns into a vector of consumable `TemplatePartial`'s. Consumed by
-/// Handlebars in `built_html`.
+/// Handlebars in `build_html`.
 #[cached]
 fn find_partials() -> Vec<TemplatePartial> {
-    let paths = find_files(
+    return find_files(
         format!("{}{}", get_config().dir, "/_partials"),
         FileType::Handlebars,
-    );
-    let mut partials: Vec<TemplatePartial> = Vec::new();
-
-    for path in paths {
+    )
+    .par_iter()
+    .map(|path| {
         let partial_path_split: Vec<&str> = path.split("/").collect();
         let partial_name = partial_path_split
             .last()
@@ -223,15 +226,12 @@ fn find_partials() -> Vec<TemplatePartial> {
             .unwrap()
             .replace(".hbs", "");
 
-        let partial = TemplatePartial {
+        return TemplatePartial {
             name: partial_name,
-            path: path,
+            path: path.clone(),
         };
-
-        partials.push(partial);
-    }
-
-    return partials;
+    })
+    .collect();
 }
 
 /// Parses a given content item's `contents` for YAML-like meta-data which it
@@ -275,28 +275,28 @@ fn parse_content_file_entry(contents: String) -> String {
 /// and the Markdown entry. Returns a vector of `ContentItem`.
 #[cached]
 fn parse_content_files(files: Vec<String>) -> Vec<ContentItem> {
-    let mut content_items: Vec<ContentItem> = Vec::new();
+    return files
+        .par_iter()
+        .map(|file| {
+            let f = fs::File::open(file.clone()).expect("Could not read file.");
+            let mut reader = BufReader::new(f);
+            let mut contents = String::new();
 
-    for file in files {
-        let path = file;
-        let file_contents = fs::read_to_string(path.clone());
-        let contents = file_contents.unwrap_or(String::new());
-        let meta = parse_content_file_meta(contents.clone());
-        let entry = parse_content_file_entry(contents.clone());
-        let slug = path.replace(&get_config().dir, "").replace(".md", "");
-        let time_to_read = entry.split_whitespace().count() / 225;
-        let content_item = ContentItem {
-            path,
-            slug,
-            meta,
-            entry,
-            time_to_read,
-        };
+            reader.read_to_string(&mut contents).unwrap();
 
-        content_items.push(content_item);
-    }
-
-    return content_items;
+            let meta = parse_content_file_meta(contents.clone());
+            let entry = parse_content_file_entry(contents);
+            let slug = file.replace(&get_config().dir, "").replace(".md", "");
+            let time_to_read = entry.split_whitespace().count() / 225;
+            return ContentItem {
+                path: file.clone(),
+                slug,
+                meta,
+                entry,
+                time_to_read,
+            };
+        })
+        .collect();
 }
 
 /// Handlebars date helper.
@@ -387,7 +387,7 @@ fn is_slug_helper(
             h.inverse().unwrap();
         }
 
-        if regex.unwrap().is_match(&slug.unwrap()) && h.template().is_some() {
+        if slug.is_some() && regex.unwrap().is_match(&slug.unwrap()) && h.template().is_some() {
             h.template().unwrap().render(&r, &c, &mut x, out).unwrap();
         }
     }
@@ -422,7 +422,7 @@ fn unless_slug_helper(
             h.inverse().unwrap();
         }
 
-        if !regex.unwrap().is_match(&slug.unwrap()) && h.template().is_some() {
+        if slug.is_some() && !regex.unwrap().is_match(&slug.unwrap()) && h.template().is_some() {
             h.template().unwrap().render(&r, &c, &mut x, out).unwrap();
         }
     }
@@ -512,9 +512,10 @@ fn write_to_path(path: &str, contents: String) {
     let prefix = path.parent().unwrap();
     fs::create_dir_all(prefix).unwrap();
 
-    let mut file = fs::File::create(path).unwrap();
+    let file = fs::File::create(path).unwrap();
+    let mut file = BufWriter::new(file);
     file.write_all(contents.as_bytes()).unwrap();
-    file.sync_data().unwrap();
+    //file.sync_data().unwrap();
 }
 
 /// Compiles all content items within the root directory with given
@@ -532,24 +533,22 @@ fn compile_content_items(data: TemplateData) {
         thread::spawn(move || {
             let x: Vec<ContentItem> = chunk;
             for content_item in x {
-                let item = content_item.clone();
-
-                if item.meta.get("layout").is_none() {
+                if content_item.meta.get("layout").is_none() {
                     continue;
                 }
-                
+
                 let item_data = TemplateData {
-                    path: Some(content_item.path),
-                    slug: Some(content_item.slug),
-                    meta: Some(content_item.meta),
-                    entry: Some(content_item.entry),
-                    time_to_read: Some(content_item.time_to_read),
+                    path: Some(content_item.path.clone()),
+                    slug: Some(content_item.slug.clone()),
+                    meta: Some(content_item.meta.clone()),
+                    entry: Some(content_item.entry.clone()),
+                    time_to_read: Some(content_item.time_to_read.clone()),
                     ..x_data.clone()
                 };
 
-                println!("Building {}", item.slug);
+                println!("Building {}", content_item.slug);
 
-                let layout = item.meta.get("layout").unwrap().to_string();
+                let layout = content_item.meta.get("layout").unwrap().to_string();
                 let template_path =
                     format!("{}{}{}{}", get_config().dir, "/_layouts/", layout, ".hbs");
                 let html = build_html(template_path, find_partials(), item_data);
@@ -557,7 +556,7 @@ fn compile_content_items(data: TemplateData) {
                     "{}{}{}{}",
                     get_config().dir,
                     "/public",
-                    item.slug,
+                    content_item.slug,
                     "/index.html"
                 );
 
@@ -846,6 +845,29 @@ fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
 
     for dsl_item in dsl.unwrap_or(Vec::new()) {
         let item = dsl_item.clone();
+
+        if dsl_item.from.starts_with("http") {
+            let client = isahc::HttpClient::builder()
+                .default_headers(dsl_item.headers.unwrap_or(HashMap::new()))
+                .build()
+                .unwrap();
+
+            let response = client.get(dsl_item.from);
+
+            if response.is_ok() {
+                content.insert(
+                    dsl_item.name,
+                    TemplateContentDSLItem::Pulled(
+                        serde_json::from_str(&response.unwrap().text().unwrap()).unwrap(),
+                    ),
+                );
+            } else {
+                println!("{:#?}", response.err());
+            }
+
+            continue;
+        }
+
         let path_str = format!("{}{}{}", config.dir, "/", dsl_item.from);
         let content_files = find_files(path_str, FileType::Markdown);
         let mut parsed_content_files = parse_content_files(content_files);
@@ -973,25 +995,26 @@ fn potentially_compile(path: PathBuf) {
     let path_str = path.as_path().display().to_string();
 
     // If data file or partials/layouts changed, re-compile everything
-    if match_data_file(&path_str) || match_handlebars_file(&path_str) {
+    if is_data_file(&path_str) || is_handlebars_file(&path_str) {
         compile()
     }
 
     // If assets changed, we need to delete all assets, and copy anew
-    if match_asset_file(&path_str) {
+    if is_asset_file(&path_str) {
         delete_assets();
         copy_assets();
     }
 
     // If content items changed, re-compile only those
-    if match_markdown_file(&path_str) {
+    if is_markdown_file(&path_str) {
         let global_data = compose_global_template_data();
 
-        compile_content_items(global_data);
+        compile_content_items(global_data.clone());
+        compile_template_items(global_data);
     }
 
     // If template items changed, re-compile only those
-    if match_handlebars_page_file(&path_str) {
+    if is_handlebars_page_file(&path_str) {
         let global_data = compose_global_template_data();
 
         compile_template_items(global_data);
