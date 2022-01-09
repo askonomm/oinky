@@ -5,10 +5,9 @@ mod utils;
 use cached::proc_macro::cached;
 use comrak::{markdown_to_html, ComrakOptions};
 use dotenv::dotenv;
-use dsl::{ContentDSLItem, TemplateContentDSLItem};
+use dsl::{TemplateContentDSLItem};
 use handlebars::Handlebars;
 use hotwatch::{Event, Hotwatch};
-use isahc::prelude::*;
 use parking_lot;
 use rayon::prelude::*;
 use regex::Regex;
@@ -88,7 +87,11 @@ fn get_config() -> Config {
 
 /// Determines if the given `path` matches a Handlebars file.
 fn is_handlebars_file(path: &str) -> bool {
-    return path.ends_with(".hbs") || path.ends_with(".handlebars");
+    let relative_path = path.replace(&get_config().dir, "");
+
+    return !relative_path.starts_with("/public")
+        && !relative_path.starts_with("/node_modules")
+        && (path.ends_with(".hbs") || path.ends_with(".handlebars"));
 }
 
 /// Determines if the given `path` matches a Handlebars Page file.
@@ -243,13 +246,15 @@ fn parse_content_file_meta(contents: String) -> HashMap<String, String> {
 fn parse_content_file_entry(contents: String) -> String {
     let regex = Regex::new(r"(?s)^---(.*?)---*").unwrap();
     let entry = regex.replace(&contents, "");
+    let mut opts = ComrakOptions::default();
+    opts.render.unsafe_ = true;
 
-    return markdown_to_html(&entry, &ComrakOptions::default());
+    return markdown_to_html(&entry, &opts);
 }
 
 /// Parses given Markdown `files` for contents that contain YAML-like meta-data
 /// and the Markdown entry. Returns a vector of `ContentItem`.
-#[cached]
+#[cached(time = 2)]
 fn parse_content_files(files: Vec<String>) -> Vec<ContentItem> {
     return files
         .par_iter()
@@ -360,7 +365,6 @@ fn write_to_path(path: &str, contents: String) {
     let file = fs::File::create(path).unwrap();
     let mut file = BufWriter::new(file);
     file.write_all(contents.as_bytes()).unwrap();
-    //file.sync_data().unwrap();
 }
 
 /// Compiles all content items within the root directory with given
@@ -458,81 +462,12 @@ fn compile_template_items(data: TemplateData) {
     }
 }
 
-/// Composes content data from the `content.json` DSL which allows users to
-/// create data-sets from the available content files, further enabling more
-/// dynamic-ish site creation.
-#[cached]
-fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
-    let config = get_config();
-    let file_contents = fs::read_to_string(format!("{}{}", config.dir, "/content.json"));
-    let contents = file_contents.unwrap_or_default();
-    let dsl: Result<Vec<ContentDSLItem>, serde_json::Error> = serde_json::from_str(&contents);
-
-    if dsl.is_err() {
-        return HashMap::new();
-    }
-
-    let mut content: HashMap<String, TemplateContentDSLItem> = HashMap::new();
-
-    for dsl_item in dsl.unwrap_or(Vec::new()) {
-        let item = dsl_item.clone();
-
-        if dsl_item.from.starts_with("http") {
-            let client = isahc::HttpClient::builder()
-                .default_headers(dsl_item.headers.unwrap_or(HashMap::new()))
-                .build()
-                .unwrap();
-
-            let response = client.get(dsl_item.from);
-
-            if response.is_ok() {
-                content.insert(
-                    dsl_item.name,
-                    TemplateContentDSLItem::Pulled(
-                        serde_json::from_str(&response.unwrap().text().unwrap()).unwrap(),
-                    ),
-                );
-            } else {
-                println!("{:#?}", response.err());
-            }
-
-            continue;
-        }
-
-        let path_str = format!("{}{}{}", config.dir, "/", dsl_item.from);
-        let content_files = find_files(path_str, FileType::Markdown);
-        let mut parsed_content_files = parse_content_files(content_files);
-
-        if dsl_item.group_by.is_some() {
-            content.insert(
-                dsl_item.name,
-                TemplateContentDSLItem::Grouped(dsl::dsl_group(
-                    dsl::dsl_sort_order_limit(item, &mut parsed_content_files),
-                    dsl_item.group_by.unwrap(),
-                    dsl_item.group_by_order,
-                    dsl_item.group_by_limit,
-                )),
-            );
-        } else {
-            content.insert(
-                dsl_item.name,
-                TemplateContentDSLItem::Normal(dsl::dsl_sort_order_limit(
-                    item,
-                    &mut parsed_content_files,
-                )),
-            );
-        }
-    }
-
-    return content;
-}
-
 /// Composes global template data for consumption by Handlebars templates.
-#[cached]
+#[cached(time = 2)]
 fn compose_global_template_data() -> TemplateData {
     return TemplateData {
         site: get_site_info(),
-        content: compose_content_from_dsl(),
+        content: dsl::compose_content_from_dsl(),
         path: None,
         slug: None,
         meta: None,
@@ -542,7 +477,7 @@ fn compose_global_template_data() -> TemplateData {
 }
 
 /// Return `SiteInfo` from the `site.json` file.
-#[cached]
+#[cached(time = 2)]
 fn get_site_info() -> serde_json::Value {
     let config = get_config();
     let file_contents = fs::read_to_string(format!("{}{}", config.dir, "/site.json"));

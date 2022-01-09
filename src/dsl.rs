@@ -1,7 +1,10 @@
-use super::ContentItem;
+use super::{find_files, get_config, parse_content_files, ContentItem, FileType};
+use cached::proc_macro::cached;
 use indexmap::IndexMap;
+use isahc::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentDSLItem {
@@ -21,11 +24,12 @@ pub struct ContentDSLItem {
 pub enum TemplateContentDSLItem {
     Normal(Vec<ContentItem>),
     Grouped(IndexMap<String, Vec<ContentItem>>),
+    Single(ContentItem),
     Pulled(serde_json::Value),
 }
 
 /// Sort, order and limit given `items` according to given `dsl`.
-pub fn dsl_sort_order_limit(dsl: ContentDSLItem, items: &mut Vec<ContentItem>) -> Vec<ContentItem> {
+fn dsl_sort_order_limit(dsl: ContentDSLItem, items: &mut Vec<ContentItem>) -> Vec<ContentItem> {
     // Sort and order?
     if dsl.sort_by.is_some() {
         super::utils::sort_content_items(
@@ -48,7 +52,7 @@ pub fn dsl_sort_order_limit(dsl: ContentDSLItem, items: &mut Vec<ContentItem>) -
 /// `meta.date`. In the case of `meta.date`, it also supports an additional
 /// modifier such as `meta.date|year`, to group by year. `month` and `day`
 /// are also supported.
-pub fn dsl_group_by_grouper(item: &ContentItem, by: &String) -> String {
+fn dsl_group_by_grouper(item: &ContentItem, by: &String) -> String {
     let grouper: String;
 
     // Meta-key grouping.
@@ -110,7 +114,7 @@ pub fn dsl_group_by_grouper(item: &ContentItem, by: &String) -> String {
 
 /// Order given `groups` in either a descending or ascending order. Given
 /// `order` must either be a `asc` or `desc` string.
-pub fn dsl_group_order_limit(
+fn dsl_group_order_limit(
     groups: IndexMap<String, Vec<ContentItem>>,
     order: String,
     limit: Option<usize>,
@@ -145,7 +149,7 @@ pub fn dsl_group_order_limit(
 
 /// Group given `items` by given `by` and, optionally, order the groups by
 /// given `order`.
-pub fn dsl_group(
+fn dsl_group(
     items: Vec<ContentItem>,
     by: String,
     order: Option<String>,
@@ -185,4 +189,92 @@ pub fn dsl_group(
     }
 
     return grouped_content;
+}
+
+/// Composes content data from the `content.json` DSL which allows users to
+/// create data-sets from the available content files, further enabling more
+/// dynamic-ish site creation.
+#[cached(time = 2)]
+pub fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
+    let config = get_config();
+    let file_contents = fs::read_to_string(format!("{}{}", config.dir, "/content.json"));
+    let contents = file_contents.unwrap_or_default();
+    let dsl: Result<Vec<ContentDSLItem>, serde_json::Error> = serde_json::from_str(&contents);
+
+    if dsl.is_err() {
+        return HashMap::new();
+    }
+
+    let mut content: HashMap<String, TemplateContentDSLItem> = HashMap::new();
+
+    for dsl_item in dsl.unwrap_or(Vec::new()) {
+        let item = dsl_item.clone();
+
+        // HTTP fetched data
+        if dsl_item.from.starts_with("http") {
+            let client = isahc::HttpClient::builder()
+                .default_headers(dsl_item.headers.unwrap_or(HashMap::new()))
+                .build()
+                .unwrap();
+
+            let response = client.get(dsl_item.from);
+
+            if response.is_ok() {
+                content.insert(
+                    dsl_item.name,
+                    TemplateContentDSLItem::Pulled(
+                        serde_json::from_str(&response.unwrap().text().unwrap()).unwrap(),
+                    ),
+                );
+            } else {
+                println!("{:#?}", response.err());
+            }
+
+            continue;
+        }
+
+        // Markdown data
+        let path_str = format!("{}{}{}", config.dir, "/", dsl_item.from);
+        let single_item = path_str.ends_with(".md") || path_str.ends_with(".markdown");
+        let mut content_files: Vec<String> = Vec::new();
+
+        if single_item {
+            content_files.push(path_str);
+        } else {
+            content_files = find_files(path_str, FileType::Markdown);
+        }
+
+        let mut parsed_content_files = parse_content_files(content_files);
+
+        if single_item && parsed_content_files.len() > 0 {
+            content.insert(
+                dsl_item.name,
+                TemplateContentDSLItem::Single(parsed_content_files.first().unwrap().clone())
+            );
+
+            continue;
+        }
+
+        if dsl_item.group_by.is_some() {
+            content.insert(
+                dsl_item.name,
+                TemplateContentDSLItem::Grouped(dsl_group(
+                    dsl_sort_order_limit(item, &mut parsed_content_files),
+                    dsl_item.group_by.unwrap(),
+                    dsl_item.group_by_order,
+                    dsl_item.group_by_limit,
+                )),
+            );
+        } else {
+            content.insert(
+                dsl_item.name,
+                TemplateContentDSLItem::Normal(dsl_sort_order_limit(
+                    item,
+                    &mut parsed_content_files,
+                )),
+            );
+        }
+    }
+
+    return content;
 }
