@@ -1,6 +1,7 @@
 mod dsl;
 mod helpers;
 mod utils;
+mod tests;
 
 use cached::proc_macro::cached;
 use comrak::{markdown_to_html, ComrakOptions};
@@ -72,7 +73,7 @@ fn err_out(message: String) {
 /// Returns runtime config for Oinky such as the directory
 /// where to run Oinky in. If dotenv values for these exist then it will
 /// use those instead.
-#[cached]
+#[cached(time = 2)]
 fn get_config() -> Config {
     return Config {
         dir: env::var("READ_DIR")
@@ -131,8 +132,7 @@ fn is_asset_file(path: &str) -> bool {
         && !path.ends_with(".handlebars")
         && !path.ends_with(".md")
         && !path.ends_with(".markdown")
-        && relative_path != "/site.json"
-        && relative_path != "/content.json"
+        && !is_data_file(path)
         && !relative_path.starts_with("/_layouts")
         && !relative_path.starts_with("/_partials")
         && !relative_path.starts_with("/public")
@@ -143,7 +143,7 @@ fn is_asset_file(path: &str) -> bool {
 /// Recursively browses directories within the given `dir` for any and all
 /// files that match a `file_type`. Returns a vector of strings where each
 /// string is an absolute path to the file.
-#[cached]
+#[cached(time = 2)]
 fn find_files(dir: String, file_type: FileType) -> Vec<String> {
     let mut files: Vec<String> = Vec::new();
     let read_dir = fs::read_dir(dir);
@@ -190,32 +190,32 @@ fn find_files(dir: String, file_type: FileType) -> Vec<String> {
 /// Finds all partials from within the /_partials directory that
 /// it turns into a vector of consumable `TemplatePartial`'s. Consumed by
 /// Handlebars in `build_html`.
-#[cached]
+#[cached(time = 2)]
 fn find_partials() -> Vec<TemplatePartial> {
     return find_files(
         format!("{}{}", get_config().dir, "/_partials"),
         FileType::Handlebars,
     )
-    .par_iter()
-    .map(|path| {
-        let partial_path_split: Vec<&str> = path.split("/").collect();
-        let partial_name = partial_path_split
-            .last()
-            .copied()
-            .unwrap()
-            .replace(".hbs", "");
+        .par_iter()
+        .map(|path| {
+            let partial_path_split: Vec<&str> = path.split("/").collect();
+            let partial_name = partial_path_split
+                .last()
+                .copied()
+                .unwrap()
+                .replace(".hbs", "");
 
-        return TemplatePartial {
-            name: partial_name,
-            path: path.clone(),
-        };
-    })
-    .collect();
+            return TemplatePartial {
+                name: partial_name,
+                path: path.clone(),
+            };
+        })
+        .collect();
 }
 
 /// Parses a given content item's `contents` for YAML-like meta-data which it
 /// then returns as a key-value HashMap.
-#[cached]
+#[cached(time = 2)]
 fn parse_content_file_meta(contents: String) -> HashMap<String, String> {
     let regex = Regex::new(r"(?s)^(---)(.*?)(---|\.\.\.)").unwrap();
 
@@ -242,7 +242,7 @@ fn parse_content_file_meta(contents: String) -> HashMap<String, String> {
 
 /// Parses a given content item's `contents` for the Markdown entry which it
 /// then returns as a consumable HTML string.
-#[cached]
+#[cached(time = 2)]
 fn parse_content_file_entry(contents: String) -> String {
     let regex = Regex::new(r"(?s)^---(.*?)---*").unwrap();
     let entry = regex.replace(&contents, "");
@@ -554,8 +554,7 @@ fn compile() {
 }
 
 /// Potentially runs Oinky when a given `path` is determined to be something
-/// that changes that would require the site generator to run again. Used by
-/// the watcher.
+/// that would require the site generator to run again. Used by the watcher.
 #[throttle(1, Duration::from_secs(1))]
 fn potentially_compile(path: PathBuf) {
     let path_str = path.as_path().display().to_string();
@@ -599,7 +598,7 @@ fn watch() {
         Event::Remove(path) => potentially_compile(path).unwrap_or(()),
         _ => (),
     })
-    .expect("Failed to watch directory.");
+        .expect("Failed to watch directory.");
 
     thread::park();
 }

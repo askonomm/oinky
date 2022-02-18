@@ -10,10 +10,11 @@ serde = { version = "1.0.132", features = ["derive"] }
 serde_yaml = "0.8.23"
 serde_json = { version = "1.0.73", features = ["preserve_order"] }
 serde-value = "0.7.0"
-regex = "1.5.4"
+regex = { version = "1.5.4" }
 cached = "0.26.2"
 chrono = "0.4.19"
 dotenv = "0.15.0"
+rand = "0.8.5"
 indexmap = { version = "1.7.0", features = ["serde"] }
 hotwatch = "0.4.6"
 throttle_my_fn = "0.2"
