@@ -92,19 +92,19 @@ fn dsl_group_by_grouper(item: &ContentItem, by: &String) -> String {
         if meta_key == "date" && meta_modifier == "year" {
             let date_parts: Vec<&str> = value.split("-").collect();
             grouper = date_parts[0].to_string();
-        // If we're grouping by meta.date and have `month` as a modifier
+            // If we're grouping by meta.date and have `month` as a modifier
         } else if meta_key == "date" && meta_modifier == "month" {
             let date_parts: Vec<&str> = value.split("-").collect();
             grouper = date_parts[1].to_string();
-        // If we're grouping by meta.date and have `day` as a modifier
+            // If we're grouping by meta.date and have `day` as a modifier
         } else if meta_key == "date" && meta_modifier == "day" {
             let date_parts: Vec<&str> = value.split("-").collect();
             grouper = date_parts[2].to_string();
-        // Otherwise, the value itself is the grouper
+            // Otherwise, the value itself is the grouper
         } else {
             grouper = value;
         }
-    // Group by top-level field key.
+        // Group by top-level field key.
     } else {
         grouper = super::utils::get_field_by_name(item, &by);
     }
@@ -191,6 +191,24 @@ fn dsl_group(
     return grouped_content;
 }
 
+fn get_content_from_http(from: String) -> Option<TemplateContentDSLItem> {
+    let client = isahc::HttpClient::builder()
+        .default_headers(dsl_item.headers.unwrap_or(HashMap::new()))
+        .build()
+        .unwrap();
+
+    let response = client.get(dsl_item.from);
+
+    if response.is_ok() {
+        return Some(TemplateContentDSLItem::Pulled(
+            serde_json::from_str(&response.unwrap().text().unwrap()).unwrap(),
+        ));
+    }
+
+    println!("{:#?}", response.err());
+    return None;
+}
+
 /// Composes content data from the `content.json` DSL which allows users to
 /// create data-sets from the available content files, further enabling more
 /// dynamic-ish site creation.
@@ -212,22 +230,13 @@ pub fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
 
         // HTTP fetched data
         if dsl_item.from.starts_with("http") {
-            let client = isahc::HttpClient::builder()
-                .default_headers(dsl_item.headers.unwrap_or(HashMap::new()))
-                .build()
-                .unwrap();
+            let pulled_content = pull_content_from_http(dsl_item.from);
 
-            let response = client.get(dsl_item.from);
-
-            if response.is_ok() {
+            if pulled_content.is_some() {
                 content.insert(
                     dsl_item.name,
-                    TemplateContentDSLItem::Pulled(
-                        serde_json::from_str(&response.unwrap().text().unwrap()).unwrap(),
-                    ),
+                    pulled_content.unwrap(),
                 );
-            } else {
-                println!("{:#?}", response.err());
             }
 
             continue;
@@ -249,7 +258,7 @@ pub fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
         if single_item && parsed_content_files.len() > 0 {
             content.insert(
                 dsl_item.name,
-                TemplateContentDSLItem::Single(parsed_content_files.first().unwrap().clone())
+                TemplateContentDSLItem::Single(parsed_content_files.first().unwrap().clone()),
             );
 
             continue;
