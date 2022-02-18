@@ -587,7 +587,7 @@ fn potentially_compile(path: PathBuf) {
     }
 }
 
-/// Watches for file changes and potentally runs Oinky if an interesting enough
+/// Watches for file changes and potentially runs Oinky if an interesting enough
 /// file has been created, changed, renamed or deleted.
 fn watch() {
     let mut h = Hotwatch::new().expect("Watcher failed to initialize.");
