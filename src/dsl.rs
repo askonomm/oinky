@@ -191,13 +191,22 @@ fn dsl_group(
     return grouped_content;
 }
 
-fn get_content_from_http(from: String) -> Option<TemplateContentDSLItem> {
+/// Fetches content from a URL that's given as `from` and optionally
+/// passes along `headers` to that request (for authentication purposes,
+/// for example).
+fn get_content_from_http(
+    from: String,
+    headers: Option<HashMap<String, String>>,
+) -> Option<TemplateContentDSLItem> {
     let client = isahc::HttpClient::builder()
-        .default_headers(dsl_item.headers.unwrap_or(HashMap::new()))
-        .build()
-        .unwrap();
+        .default_headers(headers.unwrap_or(HashMap::new()))
+        .build();
 
-    let response = client.get(dsl_item.from);
+    if client.is_err() {
+        return None;
+    }
+
+    let response = client.unwrap().get(from);
 
     if response.is_ok() {
         return Some(TemplateContentDSLItem::Pulled(
@@ -207,6 +216,42 @@ fn get_content_from_http(from: String) -> Option<TemplateContentDSLItem> {
 
     println!("{:#?}", response.err());
     return None;
+}
+
+/// Gets content from disk, which can be a singular Markdown file,
+/// a collection of Markdown files, or grouped collection of Markdown files.
+fn get_content_from_disk(item: ContentDSLItem, dir: String) -> Option<TemplateContentDSLItem> {
+    let path_str = format!("{}{}{}", dir, "/", item.from);
+    let single_item = path_str.ends_with(".md") || path_str.ends_with(".markdown");
+    let mut content_files: Vec<String> = Vec::new();
+
+    if single_item {
+        content_files.push(path_str);
+    } else {
+        content_files = find_files(path_str, FileType::Markdown);
+    }
+
+    let mut parsed_content_files = parse_content_files(content_files);
+
+    if single_item && parsed_content_files.len() > 0 {
+        return Some(TemplateContentDSLItem::Single(
+            parsed_content_files.first().unwrap().clone(),
+        ));
+    }
+
+    if item.group_by.is_some() {
+        return Some(TemplateContentDSLItem::Grouped(dsl_group(
+            dsl_sort_order_limit(item.clone(), &mut parsed_content_files),
+            item.group_by.unwrap(),
+            item.group_by_order,
+            item.group_by_limit,
+        )));
+    }
+
+    return Some(TemplateContentDSLItem::Normal(dsl_sort_order_limit(
+        item,
+        &mut parsed_content_files,
+    )));
 }
 
 /// Composes content data from the `content.json` DSL which allows users to
@@ -226,62 +271,21 @@ pub fn compose_content_from_dsl() -> HashMap<String, TemplateContentDSLItem> {
     let mut content: HashMap<String, TemplateContentDSLItem> = HashMap::new();
 
     for dsl_item in dsl.unwrap_or(Vec::new()) {
-        let item = dsl_item.clone();
-
         // HTTP fetched data
         if dsl_item.from.starts_with("http") {
-            let pulled_content = pull_content_from_http(dsl_item.from);
+            let http_content = get_content_from_http(dsl_item.from, dsl_item.headers);
 
-            if pulled_content.is_some() {
-                content.insert(
-                    dsl_item.name,
-                    pulled_content.unwrap(),
-                );
+            if http_content.is_some() {
+                content.insert(dsl_item.name, http_content.unwrap());
             }
-
-            continue;
         }
-
         // Markdown data
-        let path_str = format!("{}{}{}", config.dir, "/", dsl_item.from);
-        let single_item = path_str.ends_with(".md") || path_str.ends_with(".markdown");
-        let mut content_files: Vec<String> = Vec::new();
+        else {
+            let disk_content = get_content_from_disk(dsl_item.clone(), config.dir.clone());
 
-        if single_item {
-            content_files.push(path_str);
-        } else {
-            content_files = find_files(path_str, FileType::Markdown);
-        }
-
-        let mut parsed_content_files = parse_content_files(content_files);
-
-        if single_item && parsed_content_files.len() > 0 {
-            content.insert(
-                dsl_item.name,
-                TemplateContentDSLItem::Single(parsed_content_files.first().unwrap().clone()),
-            );
-
-            continue;
-        }
-
-        if dsl_item.group_by.is_some() {
-            content.insert(
-                dsl_item.name,
-                TemplateContentDSLItem::Grouped(dsl_group(
-                    dsl_sort_order_limit(item, &mut parsed_content_files),
-                    dsl_item.group_by.unwrap(),
-                    dsl_item.group_by_order,
-                    dsl_item.group_by_limit,
-                )),
-            );
-        } else {
-            content.insert(
-                dsl_item.name,
-                TemplateContentDSLItem::Normal(dsl_sort_order_limit(
-                    item,
-                    &mut parsed_content_files,
-                )),
-            );
+            if disk_content.is_some() {
+                content.insert(dsl_item.name, disk_content.unwrap());
+            }
         }
     }
 

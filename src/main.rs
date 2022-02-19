@@ -1,7 +1,6 @@
 mod dsl;
 mod helpers;
 mod utils;
-mod tests;
 
 use cached::proc_macro::cached;
 use comrak::{markdown_to_html, ComrakOptions};
